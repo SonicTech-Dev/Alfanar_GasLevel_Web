@@ -4,7 +4,7 @@ const { parseStringPromise } = require('xml2js');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3007;
 
 // Serve static frontend
 app.use(express.static(path.join(__dirname, 'public')));
