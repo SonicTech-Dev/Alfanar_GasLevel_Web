@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Tank Level — Sonic</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Tank Level</h1>
+      <p class="subtitle">Real-time tank monitoring</p>
+    </div>
+
+    <!-- Logo moved to header and centered at the top-middle -->
+    <!-- Place your PNG at: public/static/logo.png (served at /static/logo.png) -->
+    <div class="header-logo" aria-hidden="true">
+      <img src="/static/logo.png" alt="Sonic logo" class="logo-img" />
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="controls card">
+      <div class="row">
+        <label for="device">Device</label>
+        <select id="device">
+          <!-- Example device list: edit as needed -->
+          <option value="230347">Device A — 230347</option>
+          <option value="230344">Device B — 230344</option>
+        </select>
+
+        <button id="btn" class="primary">
+          <span id="btn-text">Get Level</span>
+          <span id="spinner" class="spinner" aria-hidden="true" style="display:none;"></span>
+        </button>
+      </div>
+      <p class="hint">Select a device and click Get Level.</p>
+    </section>
+
+    <section id="result" class="result card" style="display:none;">
+      <div class="result-header">
+        <div class="device-name" id="deviceName">-</div>
+        <div class="value-unit">
+          <div class="value" id="level">--</div>
+          <div class="unit">%</div>
+        </div>
+      </div>
+      <div class="meta">
+        <div><strong>Timestamp:</strong> <span id="time">-</span></div>
+        <div><strong>Terminal ID:</strong> <span id="term">-</span></div>
+      </div>
+    </section>
+
+    <div id="error" class="error" style="display:none;"></div>
+  </main>
+
+  <footer class="footer">
+    <span>Powered by Sonic</span>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

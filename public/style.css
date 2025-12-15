@@ -1,0 +1,215 @@
+:root{
+  --bg1: #0f172a;
+  --bg2: #07103a;
+  --card: rgba(255,255,255,0.04);
+  --glass: rgba(255,255,255,0.06);
+  --accent: #06B6D4;
+  --accent-2: #6366F1;
+  --text: #e6eef8;
+  --muted: #9aa8bf;
+  --select-bg: rgba(255,255,255,0.03);
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  font-family: Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  color:var(--text);
+  background: linear-gradient(180deg, var(--bg1) 0%, #07143b 55%);
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  display:flex;
+  flex-direction:column;
+  min-height:100vh;
+}
+
+/* Header - position relative so we can center the logo absolutely at top-middle */
+.topbar{
+  position:relative;
+  display:flex;
+  align-items:flex-start;
+  justify-content:flex-start;
+  padding:8px 28px 12px 28px; /* reduced top padding to avoid extra space above logo */
+  gap:16px;
+  background: transparent;
+  /* ensure header height accommodates the logo without extra margins */
+  min-height:112px; /* matches typical desktop logo height (adjust if you change logo size) */
+}
+
+/* Top-left text slightly bigger as requested */
+.brand h1{
+  margin:0;
+  font-size:28px; /* a little bigger */
+  letter-spacing:0.2px;
+  line-height:1.05;
+}
+.subtitle{
+  margin:6px 0 0;
+  font-size:13px; /* slightly larger */
+  color:var(--muted);
+  line-height:1.1;
+}
+
+/* Header-centered logo (no extra margins above it) */
+.header-logo{
+  position:absolute;
+  left:50%;
+  top:6px; /* small distance from very top of header */
+  transform:translateX(-50%);
+  z-index:1;
+  display:flex;
+  align-items:flex-start;
+  pointer-events:none; /* decorative only */
+}
+
+/* main container */
+.container{
+  width:100%;
+  max-width:900px;
+  margin:8px auto 32px; /* tightened top margin so header and logo sit close together */
+  padding:0 20px;
+  flex:1 0 auto;
+}
+
+/* card */
+.card{
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border: 1px solid rgba(255,255,255,0.04);
+  padding:18px;
+  border-radius:12px;
+  box-shadow: 0 6px 18px rgba(2,6,23,0.5);
+}
+
+/* controls */
+.controls .row,
+.controls .row *{vertical-align:middle}
+.row{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  flex-wrap:wrap;
+}
+
+label{font-size:13px;color:var(--muted)}
+.small{font-size:12px}
+
+/* Make the select clearly visible when unselected.
+   Use explicit color and a subtle background so text is readable. */
+select{
+  padding:10px 12px;
+  border-radius:8px;
+  border:1px solid rgba(255,255,255,0.03);
+  background: var(--select-bg);
+  color: var(--text); /* ensure visible */
+  outline:none;
+  min-width:220px;
+  -webkit-appearance:none;
+  -moz-appearance:none;
+  appearance:none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%),
+                    linear-gradient(to right, rgba(255,255,255,0.02), rgba(255,255,255,0.02));
+  background-position: calc(100% - 18px) calc(1em + 2px), calc(100% - 13px) calc(1em + 2px), 100% 0;
+  background-size: 6px 6px, 6px 6px, 2.5em 100%;
+  background-repeat: no-repeat;
+}
+
+/* Ensure options are readable in dropdown on most platforms (may vary by browser) */
+select option{
+  color:#041024;
+  background: #ffffff;
+}
+
+/* button */
+button{
+  border:0;
+  cursor:pointer;
+  border-radius:10px;
+  padding:10px 14px;
+  font-weight:600;
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+}
+button.primary{
+  background: linear-gradient(90deg,var(--accent-2),var(--accent));
+  color:#041024;
+  box-shadow: 0 6px 20px rgba(6,182,212,0.14);
+}
+
+/* small hint */
+.hint{margin:10px 0 0;color:var(--muted);font-size:13px}
+
+/* logo image styles */
+/* Desktop size you set earlier: width:200px; height:100px */
+.logo-img{
+  width:200px;
+  height:100px;
+  object-fit:contain;
+  border-radius:12px;
+  box-shadow: 0 10px 30px rgba(2,6,23,0.6);
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  padding:8px;
+  display:block;
+}
+
+/* result */
+.result-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.device-name{font-size:14px;color:var(--muted)}
+.value-unit{display:flex;align-items:center;gap:8px}
+.value{font-size:48px;font-weight:700;line-height:1;color:#fff}
+.unit{font-size:18px;color:var(--muted)}
+
+.meta{margin-top:12px;color:var(--muted);font-size:13px;display:flex;gap:18px;flex-wrap:wrap}
+
+/* error */
+.error{
+  margin-top:16px;
+  max-width:900px;
+  margin-left:auto;
+  margin-right:auto;
+  color:#ffdede;
+  background: rgba(255,0,0,0.06);
+  border:1px solid rgba(255,0,0,0.09);
+  padding:12px;
+  border-radius:8px;
+}
+
+/* footer */
+.footer{
+  text-align:center;
+  padding:14px 8px;
+  color:var(--muted);
+  font-size:13px;
+  border-top: 1px solid rgba(255,255,255,0.02);
+}
+
+/* spinner */
+.spinner{
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  border:2px solid rgba(255,255,255,0.18);
+  border-top-color:#fff;
+  animation: spin 1s linear infinite;
+  display:inline-block;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* responsive */
+@media (max-width:640px){
+  .value{font-size:42px}
+  .row{flex-direction:column;align-items:stretch}
+  select{width:100%}
+  button{width:100%}
+  /* reduce header height and logo size on small screens */
+  .topbar{min-height:84px; padding-top:6px}
+  .logo-img{width:120px;height:64px}
+  .header-logo{top:6px}
+}
