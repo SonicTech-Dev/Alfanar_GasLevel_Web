@@ -1,28 +1,81 @@
-const btn = document.getElementById('btn');
-const spinner = document.getElementById('spinner');
-const btnText = document.getElementById('btn-text');
-const errorEl = document.getElementById('error');
-const resultEl = document.getElementById('result');
-const deviceNameEl = document.getElementById('deviceName');
-const levelEl = document.getElementById('level');
-const timeEl = document.getElementById('time');
-const termEl = document.getElementById('term');
+// Devices to display — edit friendly names or IDs here
+const devices = [
+  { id: "230347", name: "ZERO.1 A — ZN000000099657" },
+  { id: "230344", name: "ZERO.1 B — ZN000000104508" },
+  { id: "230348", name: "ZERO.1 C — ZN000000103596" },
+  { id: "230345", name: "ZERO.1 D — ZN000000104344" },
+  { id: "230346", name: "ZERO.1 E — ZN000000104482" },
+  { id: "231544", name: "ZN000000104512" } // <-- new device added
+];
 
-async function fetchTank(terminalId, friendly) {
+// Poll interval in milliseconds (adjust as needed)
+// Set to 20000 (20s) to match your observed interval; change if desired.
+const POLL_INTERVAL_MS = 20000;
+
+const tanksContainer = document.getElementById('tanks');
+const globalErrorEl = document.getElementById('global-error');
+
+// Create a card element for a device
+function createCard(device) {
+  const card = document.createElement('article');
+  card.className = 'card tank-card';
+  card.dataset.terminal = device.id;
+
+  card.innerHTML = `
+    <div class="card-top">
+      <div class="device-name">${escapeHtml(device.name)}</div>
+      <div class="card-spinner" aria-hidden="true" style="display:none;"></div>
+    </div>
+
+    <div class="result-header">
+      <div class="value-unit">
+        <div class="value">--</div>
+        <div class="unit">%</div>
+      </div>
+    </div>
+
+    <div class="meta">
+      <div><strong>Terminal ID:</strong> <span class="term">${escapeHtml(device.id)}</span></div>
+      <div><strong>Timestamp:</strong> <span class="time">-</span></div>
+    </div>
+
+    <div class="card-footer">
+      <div class="card-error" style="display:none;color:#ffdede;margin-top:8px;"></div>
+    </div>
+  `.trim();
+
+  return card;
+}
+
+// Simple HTML escape
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// Fetch data for a single card and update UI
+// showSpinner: boolean to force showing the spinner for this fetch (used for initial load)
+async function fetchAndUpdate(device, cardEl, showSpinner = false) {
+  const spinner = cardEl.querySelector('.card-spinner');
+  const errorEl = cardEl.querySelector('.card-error');
+  const valueEl = cardEl.querySelector('.value');
+  const timeEl = cardEl.querySelector('.time');
+
   // UI state
   errorEl.style.display = 'none';
-  resultEl.style.display = 'none';
-  btn.disabled = true;
-  spinner.style.display = 'inline-block';
-  btnText.textContent = 'Loading...';
+  if (showSpinner) spinner.style.display = 'inline-block';
 
   try {
-    const url = `/api/tank?terminalId=${encodeURIComponent(terminalId)}`;
+    const url = `/api/tank?terminalId=${encodeURIComponent(device.id)}`;
     const resp = await fetch(url, { cache: 'no-store' });
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error || err.message || resp.statusText || 'SOAP error');
+      throw new Error(err.error || err.message || resp.statusText || `HTTP ${resp.status}`);
     }
 
     const data = await resp.json();
@@ -36,31 +89,59 @@ async function fetchTank(terminalId, friendly) {
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const yyyy = d.getFullYear();
     const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+    const timeFormatted = `${dd}-${mm}-${yyyy} ${timeStr}`;
 
-    deviceNameEl.textContent = friendly;
-    levelEl.textContent = value;
-    timeEl.textContent = `${dd}-${mm}-${yyyy} ${timeStr}`;
-    termEl.textContent = terminalId;
-
-    resultEl.style.display = 'block';
+    valueEl.textContent = value;
+    timeEl.textContent = timeFormatted;
   } catch (err) {
     errorEl.textContent = err.message || 'Unknown error';
     errorEl.style.display = 'block';
   } finally {
-    btn.disabled = false;
-    spinner.style.display = 'none';
-    btnText.textContent = 'Get Level';
+    // Hide spinner after the fetch completes (only visible when showSpinner === true)
+    if (showSpinner) spinner.style.display = 'none';
+    // Mark device as "initial-loaded" so future polls don't show the spinner again
+    device._initialLoaded = true;
   }
 }
 
-document.getElementById('btn').addEventListener('click', () => {
-  const select = document.getElementById('device');
-  const terminalId = select.value;
-  if (!terminalId) {
-    errorEl.textContent = 'Please select a terminalId.';
-    errorEl.style.display = 'block';
-    return;
-  }
-  const friendly = select.options[select.selectedIndex].text;
-  fetchTank(terminalId, friendly);
-});
+// Build all cards and start polling
+function init() {
+  if (!tanksContainer) return;
+
+  // Clear container
+  tanksContainer.innerHTML = '';
+
+  // Build cards for all devices
+  devices.forEach(device => {
+    const card = createCard(device);
+    tanksContainer.appendChild(card);
+  });
+
+  // Initial fetch for all cards — show spinner for the first fetch only
+  const cardEls = Array.from(document.querySelectorAll('.tank-card'));
+  cardEls.forEach(cardEl => {
+    const terminalId = cardEl.dataset.terminal;
+    const device = devices.find(d => d.id === terminalId);
+    if (device) fetchAndUpdate(device, cardEl, true);
+  });
+
+  // Polling: subsequent refreshes will NOT show the spinner (silent updates)
+  setInterval(refreshAll, POLL_INTERVAL_MS);
+}
+
+// Fetch for every device/card (silent updates)
+function refreshAll() {
+  const cardEls = Array.from(document.querySelectorAll('.tank-card'));
+  cardEls.forEach(cardEl => {
+    const terminalId = cardEl.dataset.terminal;
+    const device = devices.find(d => d.id === terminalId);
+    if (device) fetchAndUpdate(device, cardEl, false);
+  });
+}
+
+// Initialize on DOM ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}

@@ -8,54 +8,26 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <h1>Tank Level</h1>
-      <p class="subtitle">Real-time tank monitoring</p>
-    </div>
+    <div class="brand-with-logo">
+      <!-- Logo on the left, sized professionally -->
+      <div class="header-logo" aria-hidden="true">
+        <img src="/static/logo.png" alt="Sonic logo" class="logo-img" />
+      </div>
 
-    <!-- Logo moved to header and centered at the top-middle -->
-    <!-- Place your PNG at: public/static/logo.png (served at /static/logo.png) -->
-    <div class="header-logo" aria-hidden="true">
-      <img src="/static/logo.png" alt="Sonic logo" class="logo-img" />
+      <div class="brand">
+        <h1>Tank Level</h1>
+        <p class="subtitle">Real-time tank monitoring</p>
+      </div>
     </div>
   </header>
 
   <main class="container">
-    <section class="controls card">
-      <div class="row">
-        <label for="device">Device</label>
-        <select id="device">
-          <!-- Example device list: edit as needed -->
-          <option value="230347">ZERO.1 A — ZN000000099657</option>
-          <option value="230344">ZERO.1 B — ZN000000104508</option>
-	  <option value="230348">ZERO.1 C — ZN000000103596</option>
-	  <option value="230345">ZERO.1 D — ZN000000104344</option>
-	  <option value="230346">ZERO.1 E — ZN000000104482</option>		
-        </select>
-
-        <button id="btn" class="primary">
-          <span id="btn-text">Get Level</span>
-          <span id="spinner" class="spinner" aria-hidden="true" style="display:none;"></span>
-        </button>
-      </div>
-      <p class="hint">Select a device and click Get Level.</p>
+    <!-- Grid of tank cards -->
+    <section id="tanks" class="tanks-grid" aria-live="polite">
+      <!-- Cards are generated dynamically by script.js -->
     </section>
 
-    <section id="result" class="result card" style="display:none;">
-      <div class="result-header">
-        <div class="device-name" id="deviceName">-</div>
-        <div class="value-unit">
-          <div class="value" id="level">--</div>
-          <div class="unit">%</div>
-        </div>
-      </div>
-      <div class="meta">
-        <div><strong>Timestamp:</strong> <span id="time">-</span></div>
-        <div><strong>Terminal ID:</strong> <span id="term">-</span></div>
-      </div>
-    </section>
-
-    <div id="error" class="error" style="display:none;"></div>
+    <div id="global-error" class="error" style="display:none;"></div>
   </main>
 
   <footer class="footer">
