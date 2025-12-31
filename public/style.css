@@ -8,15 +8,20 @@
   --text: #e6eef8;
   --muted: #9aa8bf;
   --select-bg: rgba(255,255,255,0.03);
+
+  --green: #22c55e;
+  --orange: #f59e0b;
+  --red: #ef4444;
 }
 
+/* baseline */
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
   margin:0;
   font-family: Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
   color:var(--text);
-  background: linear-gradient(180deg, var(--bg1) 0%, #07143b 55%);
+  background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 55%);
   -webkit-font-smoothing:antialiased;
   -moz-osx-font-smoothing:grayscale;
   display:flex;
@@ -24,44 +29,58 @@ body{
   min-height:100vh;
 }
 
-/* Header — inline logo + brand */
+/* Header — inline logo + brand (refined to be more prominent but balanced) */
 .topbar{
   display:flex;
   align-items:center;
   justify-content:center;
-  padding:18px 28px;
-  gap:16px;
+  padding:28px 32px;
+  gap:18px;
   background: transparent;
-  min-height:92px;
+  min-height:140px; /* slightly taller so logo breathes without pushing content */
 }
 
 /* container for logo + brand to keep them grouped */
 .brand-with-logo{
   display:flex;
   align-items:center;
-  gap:16px;
+  gap:18px;
   width:100%;
   max-width:1200px;
 }
 
-/* Logo styles (now inline) */
+/* stronger, more professional logo container */
 .header-logo{
   display:flex;
   align-items:center;
   justify-content:center;
   flex:0 0 auto;
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.005));
+  border-radius:12px;
+  padding:10px;             /* breathing room around the mark */
+  border:1px solid rgba(255,255,255,0.06);
+  box-shadow: 0 12px 36px rgba(2,6,23,0.55);
+  transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
-/* logo image refined to professional size */
+/* logo image refined to be more prominent but still harmonious */
 .logo-img{
-  width:84px;
-  height:56px;
+  width:140px;              /* larger for more presence */
+  height:86px;
   object-fit:contain;
-  border-radius:8px;
-  box-shadow: 0 6px 18px rgba(2,6,23,0.4);
-  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
-  padding:6px;
   display:block;
+  border-radius:8px;
+  background: transparent;
+  transform-origin:center;
+  transition: transform 180ms cubic-bezier(.2,.9,.2,1), box-shadow 180ms;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* hover/focus makes the logo subtly lift — noticeable but not overpowering */
+.header-logo:hover .logo-img,
+.header-logo:focus-within .logo-img{
+  transform: translateY(-4px) scale(1.03);
+  box-shadow: 0 18px 48px rgba(2,6,23,0.6);
 }
 
 /* brand text sits to the right of the logo */
@@ -69,26 +88,28 @@ body{
   display:flex;
   flex-direction:column;
   justify-content:center;
-  gap:4px;
+  gap:6px;
 }
 .brand h1{
   margin:0;
-  font-size:22px;
+  font-size:30px; /* larger title */
+  font-weight:700;
   letter-spacing:0.2px;
-  line-height:1.05;
+  line-height:1.02;
 }
 .subtitle{
   margin:0;
-  font-size:12.5px;
+  font-size:14px; /* larger subtitle */
   color:var(--muted);
   line-height:1.05;
+  opacity:0.95;
 }
 
-/* main container */
+/* main container — moved down a bit so cards sit lower */
 .container{
   width:100%;
   max-width:1200px;
-  margin:16px auto 36px;
+  margin:36px auto 36px;
   padding:0 20px;
   flex:1 0 auto;
 }
@@ -104,7 +125,24 @@ body{
   display:flex;
   flex-direction:column;
   justify-content:space-between;
-  position:relative; /* required for absolute spinner positioning */
+  position:relative;
+  transition: transform 160ms cubic-bezier(.2,.9,.2,1), box-shadow 160ms;
+  will-change: transform;
+  user-select: none;
+}
+
+/* Hover / focus lift and show controls */
+.card:hover,
+.card:focus-within{
+  transform: translateY(-6px) scale(1.02);
+  box-shadow: 0 18px 40px rgba(2,6,23,0.55);
+}
+
+/* Selected card (keyboard) */
+.card.selected{
+  outline: 2px solid rgba(99,102,241,0.22);
+  box-shadow: 0 22px 48px rgba(2,6,23,0.6);
+  transform: translateY(-6px) scale(1.02);
 }
 
 /* Grid for tanks — larger cards and spacing */
@@ -130,14 +168,39 @@ body{
   gap:12px;
   margin-top:6px;
 }
-.device-name{font-size:14px;color:var(--muted); font-weight:600}
+
+/* Value block */
 .value-unit{display:flex;align-items:center;gap:10px}
-.value{font-size:52px;font-weight:800;line-height:1;color:#fff}
+.value-box{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+
+/* status dot left of number */
+.status-dot{
+  width:12px;
+  height:12px;
+  border-radius:50%;
+  flex:0 0 auto;
+  box-shadow: 0 0 18px rgba(0,0,0,0.25) inset;
+  opacity:0.98;
+}
+
+/* color classes */
+.status-green{ background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,0.25); }
+.status-orange{ background: var(--orange); box-shadow: 0 0 8px rgba(245,158,11,0.22); }
+.status-red{ background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,0.20); }
+
+/* numeric value */
+.value{font-size:52px;font-weight:800;line-height:1;color:#fff; transition: color 180ms ease, transform 160ms ease;}
+.value.muted{ color:var(--muted); font-weight:700; }
+
+/* unit */
 .unit{font-size:14px;color:var(--muted)}
 
+/* metadata and footer */
 .meta{margin-top:12px;color:var(--muted);font-size:13px;display:flex;gap:18px;flex-wrap:wrap}
-
-/* Card footer for error */
 .card-footer{margin-top:12px;display:flex;align-items:center;gap:8px;flex-direction:column}
 
 /* spinner — moved to card top-right */
@@ -155,18 +218,93 @@ body{
 /* Keep a smaller animation for a subtle look */
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* small adjustments */
-.card .meta strong{font-weight:600}
+/* value change pulse */
+@keyframes pulse-scale {
+  0% { transform: scale(1); text-shadow: 0 0 0 rgba(0,0,0,0); }
+  30% { transform: scale(1.06); text-shadow: 0 6px 26px rgba(0,0,0,0.35); }
+  100% { transform: scale(1); text-shadow: none; }
+}
+.value.pulse{
+  animation: pulse-scale 520ms ease;
+}
+
+/* loading skeleton for value */
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+  border-radius:8px;
+  min-width:84px;
+  height:56px;
+  display:inline-block;
+  animation: shimmer 1.2s linear infinite;
+  background-size: 240px 100%;
+}
+@keyframes shimmer {
+  0% { background-position: -160px 0; }
+  100% { background-position: 160px 0; }
+}
+.skeleton.small { min-width:48px; height:30px; border-radius:6px; }
 
 /* error */
 .error{
   margin-top:16px;
   color:#ffdede;
   background: rgba(255,0,0,0.06);
-  border:1px solid rgba(255,0,0,0.09);
+  border:1px solid rgba(255,255,255,0.02);
   padding:12px;
   border-radius:8px;
 }
+
+/* inline card error */
+.card-error{
+  width:100%;
+  color:#ffdede;
+  background: rgba(255,0,0,0.06);
+  border:1px solid rgba(255,255,255,0.02);
+  padding:10px;
+  border-radius:8px;
+  font-size:13px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+}
+
+/* refresh button (initially hidden, appears on hover) */
+.card .controls {
+  position:absolute;
+  top:12px;
+  right:12px;
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+.refresh-btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  width:36px;
+  height:36px;
+  background: rgba(255,255,255,0.02);
+  color:var(--muted);
+  border:1px solid rgba(255,255,255,0.03);
+  border-radius:8px;
+  cursor:pointer;
+  transition: background 120ms, transform 120ms, color 120ms;
+  opacity:0;
+  transform: translateY(-6px) scale(0.98);
+  pointer-events:none;
+  font-size:14px;
+}
+.card:hover .refresh-btn,
+.card:focus-within .refresh-btn{
+  opacity:1;
+  transform: translateY(0) scale(1);
+  pointer-events:auto;
+}
+.refresh-btn svg { display:block; color:var(--muted); }
+.refresh-btn:active{ transform: translateY(0) scale(.98); }
+.refresh-btn:focus{ outline:2px solid rgba(99,102,241,0.18); }
 
 /* footer */
 .footer{
@@ -181,15 +319,16 @@ body{
 @media (max-width:900px){
   .value{font-size:46px}
   .tanks-grid{grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));}
-  .logo-img{width:72px;height:48px}
-  .brand h1{font-size:20px}
+  .logo-img{ width:108px; height:66px; }
+  .brand h1{ font-size:22px; }
+  .topbar{ min-height:120px; padding:22px 20px; }
 }
 @media (max-width:640px){
   .value{font-size:38px}
   .tanks-grid{grid-template-columns: 1fr;}
   .brand-with-logo{gap:10px}
-  .logo-img{width:56px;height:40px}
+  .logo-img{ width:88px; height:56px; }
   .brand h1{font-size:18px}
   .subtitle{font-size:12px}
-  .topbar{padding:12px 14px; min-height:72px}
+  .topbar{ min-height:96px; padding:14px 12px; }
 }
