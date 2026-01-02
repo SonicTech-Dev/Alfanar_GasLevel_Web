@@ -253,27 +253,31 @@ app.get('/api/tank', async (req, res) => {
     }
 
     const items = collectItems(parsed);
-    const target = findLivelloItem(items);
 
-    const valueKeys = ['Value','value','Valore','valore','Val','val'];
-    const timeKeys = ['LastContact','LastContactDate','LastSeen','Timestamp','timestamp','Time','time','DateTime','dateTime','Data','DataOra'];
-    const idKeys = ['Id','ID','TerminalId','terminalId','TerminalID','IdTerminal'];
-    const snKeys = ['Name','NAME','Nome','Serial','SN','name'];
-    const descKeys = ['Description','description','Descrizione','descrizione','Label'];
+    // Filter only items of type "InfoVariable" and Name as "LIVELLO"
+    const target = items.find(item => {
+      const type = item && item['$'] && item['$']['xsi:type'];
+      const name = item && item['Name'];
+      return type === 'ns1:InfoVariable' && nodeText(name).trim().toUpperCase() === 'LIVELLO';
+    });
 
-    // Extract fields carefully
-    const rawValue = target ? extractField(target, valueKeys) : null;
-    let timestampRaw = target ? extractField(target, timeKeys) : null;
-    if (!timestampRaw) timestampRaw = findFirstKeyAnywhere(parsed, timeKeys);
-    const timestampIso = validateTimestamp(timestampRaw);
-
-    let idField = findFirstKeyAnywhere(parsed, idKeys) || terminalId;
-    // ensure idField is numeric-like; if not, fallback to terminalId
-    if (idField != null && !/^\d+$/.test(String(idField))) {
-      idField = terminalId;
+    if (!target) {
+      console.warn('No valid LIVELLO InfoVariable found for terminal:', terminalId);
+      return res.status(404).json({ error: 'Device Offline' });
     }
 
-    let snField = findFirstKeyAnywhere(parsed, snKeys) || (target ? extractField(target, snKeys) : null);
+    const valueKeys = ['Value','value'];
+    const timeKeys = ['Timestamp','timestamp'];
+    const idKeys = ['Id','ID'];
+    const snKeys = ['Name','NAME'];
+
+    // Extract fields from the filtered InfoVariable
+    const rawValue = extractField(target, valueKeys);
+    const timestampRaw = extractField(target, timeKeys);
+    const timestampIso = validateTimestamp(timestampRaw);
+
+    const idField = extractField(target, idKeys) || terminalId;
+    const snField = extractField(target, snKeys);
 
     const numericValue = parseNumericValue(rawValue);
 
