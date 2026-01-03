@@ -1,24 +1,9 @@
 // server.js
-// Express server that calls the SOAP TerminalGetInfo method,
-// extracts exactly these fields from the SOAP response:
-//   - id  (terminal identifier, integer)
-//   - sn  (serial number / Name)
-//   - tank_level (numeric percent)
-//   - timestamp (ISO string from LastContact)
-// Then saves them into your existing "tank_level" table (columns: id, sn, tank_level, timestamp).
-//
-// Fixes applied in this version:
-// - Avoids using ON CONFLICT (id) which failed when no unique constraint existed.
-//   Instead it performs an UPDATE ... RETURNING; if no row updated, it INSERTs.
-// - Validates/parses timestamp before writing; invalid timestamps are written as NULL
-//   to prevent "invalid input syntax for type timestamp" errors.
-// - Ensures tank_level receives a numeric value (or NULL when unparsable).
-//
-// Requirements:
-//   npm install express node-fetch@2 xml2js pg dotenv
-//
-// Environment variables:
-//   DATABASE_URL, SOAP_URL, SOAP_ACTION, SOAP_USERNAME, SOAP_PASSWORD, PORT
+// Updated: always INSERT a new row for each reading (log-style).
+// - Removed the UPDATE-then-INSERT behavior; now every call inserts a new row.
+// - Keeps using terminal-level Id/Name from the InfoTerminal ("return") section
+//   for the id and sn columns.
+// - The DB 'no' column is assumed to be handled server-side by Postgres default/sequence.
 
 require('dotenv').config();
 
@@ -160,6 +145,27 @@ function findFirstKeyAnywhere(obj, candidateKeys = []) {
   return null;
 }
 
+/* NEW: find the InfoTerminal (the "return") node in the parsed SOAP response */
+function findInfoTerminal(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  // If this object looks like an InfoTerminal (has Id and Name), return it
+  if ((('Id' in obj) || ('id' in obj)) && (('Name' in obj) || ('name' in obj))) {
+    const idTxt = nodeText(obj.Id || obj.id);
+    const nameTxt = nodeText(obj.Name || obj.name);
+    if ((idTxt != null && String(idTxt).trim() !== '') || (nameTxt != null && String(nameTxt).trim() !== '')) {
+      return obj;
+    }
+  }
+  // Recurse into children
+  for (const v of Object.values(obj)) {
+    if (typeof v === 'object') {
+      const found = findInfoTerminal(v);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function buildSoapBody(terminalId) {
   return `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:api="http://webservice.api.shitek.it/">
@@ -193,24 +199,12 @@ function validateTimestamp(ts) {
   return null;
 }
 
-/* DB write: UPDATE then INSERT (avoids requiring a UNIQUE/PK on id for ON CONFLICT) */
+/* DB write: always INSERT a new row (log-style) */
 async function upsertTankLevel({ idVal, snVal, numericLevelVal, timestampVal }) {
   if (!pool) return null;
   const client = await pool.connect();
   try {
-    // try to UPDATE first
-    const updateSql = `UPDATE tank_level SET sn = $2, tank_level = $3, timestamp = $4 WHERE id = $1 RETURNING id;`;
-    const upd = await client.query(updateSql, [
-      idVal != null ? parseInt(idVal, 10) : null,
-      snVal || null,
-      numericLevelVal != null ? numericLevelVal : null,
-      timestampVal || null
-    ]);
-    if (upd.rowCount && upd.rowCount > 0) {
-      // updated existing row
-      return { action: 'updated' };
-    }
-    // else INSERT
+    // Always insert a new row; do not attempt to update existing rows.
     const insertSql = `INSERT INTO tank_level (id, sn, tank_level, timestamp) VALUES ($1, $2, $3, $4);`;
     await client.query(insertSql, [
       idVal != null ? parseInt(idVal, 10) : null,
@@ -257,8 +251,9 @@ app.get('/api/tank', async (req, res) => {
     // Filter only items of type "InfoVariable" and Name as "LIVELLO"
     const target = items.find(item => {
       const type = item && item['$'] && item['$']['xsi:type'];
-      const name = item && item['Name'];
-      return type === 'ns1:InfoVariable' && nodeText(name).trim().toUpperCase() === 'LIVELLO';
+      const name = item && (item['Name'] || item['name']);
+      const nameText = nodeText(name) || '';
+      return type === 'ns1:InfoVariable' && nameText.trim().toUpperCase() === 'LIVELLO';
     });
 
     if (!target) {
@@ -266,22 +261,26 @@ app.get('/api/tank', async (req, res) => {
       return res.status(404).json({ error: 'Device Offline' });
     }
 
+    // Find top-level InfoTerminal ("return") node and extract its Id/Name
+    const infoTerminal = findInfoTerminal(parsed);
+    const terminalTopId = infoTerminal ? nodeText(infoTerminal.Id || infoTerminal.id) : null;
+    const terminalTopName = infoTerminal ? nodeText(infoTerminal.Name || infoTerminal.name) : null;
+
     const valueKeys = ['Value','value'];
     const timeKeys = ['Timestamp','timestamp'];
-    const idKeys = ['Id','ID'];
-    const snKeys = ['Name','NAME'];
 
-    // Extract fields from the filtered InfoVariable
+    // Extract fields from the filtered InfoVariable (LIVELLO)
     const rawValue = extractField(target, valueKeys);
     const timestampRaw = extractField(target, timeKeys);
     const timestampIso = validateTimestamp(timestampRaw);
 
-    const idField = extractField(target, idKeys) || terminalId;
-    const snField = extractField(target, snKeys);
+    // IMPORTANT: use terminal (InfoTerminal) Id/Name for id/sn columns
+    const idField = terminalTopId || terminalId;
+    const snField = terminalTopName || extractField(target, ['SerialNumber','Serial','Name','NAME']);
 
     const numericValue = parseNumericValue(rawValue);
 
-    // Persist to your existing table (id, sn, tank_level, timestamp)
+    // Persist to your existing table (id, sn, tank_level, timestamp) - always insert new row
     try {
       const result = await upsertTankLevel({
         idVal: idField,
@@ -289,16 +288,15 @@ app.get('/api/tank', async (req, res) => {
         numericLevelVal: numericValue,
         timestampVal: timestampIso
       });
-      // log action for visibility
       if (result && result.action) {
-        console.log(`Saved terminal ${idField} -> ${result.action}`);
+        console.log(`Inserted new reading for terminal ${idField} (${snField})`);
       }
     } catch (dbErr) {
       console.warn('Failed to write to tank_level table:', dbErr && dbErr.message);
-      return res.status(500).json({ error: 'DB insert/update failed', details: dbErr && dbErr.message });
+      return res.status(500).json({ error: 'DB insert failed', details: dbErr && dbErr.message });
     }
 
-    return res.json({ value: rawValue, timestamp: timestampRaw });
+    return res.json({ value: rawValue, timestamp: timestampRaw, id: idField, sn: snField });
   } catch (err) {
     console.error('Error in /api/tank', err && (err.stack || err.message || err));
     return res.status(500).json({ error: 'Internal server error' });
