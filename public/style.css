@@ -373,7 +373,7 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown) {
   border-top: 1px solid rgba(255,255,255,0.02);
 }
 
-/* Modal / history styles (moved into CSS to centralize design) */
+/* Modal / history styles (enlarged) */
 .history-modal {
   position: fixed;
   inset: 0;
@@ -382,11 +382,11 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown) {
   justify-content: center;
   background: rgba(0,0,0,0.88);
   z-index: 1200;
-  padding: 28px;
+  padding: 32px;
 }
 .history-panel {
   width: 100%;
-  max-width: 980px;
+  max-width: 1200px; /* increased width */
   background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.01));
   border-radius: 12px;
   padding: 20px;
@@ -457,7 +457,7 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown) {
 /* Make stats/export buttons more compact and consistent */
 .stats-btn, .export-btn { min-width:86px; }
 
-/* Chart container styling */
+/* Chart container styling — increased height to make modal taller */
 .history-panel > div[position="chart"],
 .history-panel > div[style*="height:"] {
   border-radius:8px;

@@ -574,16 +574,17 @@ function showHistoryModal(terminalId, terminalName) {
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
-          <input class="graph-title-input" type="text" placeholder="Graph Title (used for export)" aria-label="Graph Title" />
+          <input class="graph-title-input" type="text" placeholder="Graph Title" aria-label="Graph Title" />
           <div class="history-controls">
             <button class="btn stats-btn" type="button" title="Stats">Stats</button>
             <button class="btn export-btn" type="button" title="Export">Export</button>
+            <button class="btn reset-btn" type="button" title="Reset">Reset</button>
             <button class="history-close" type="button">Close</button>
           </div>
         </div>
       </div>
-      <div style="position:relative;height:340px;">
-        <canvas id="history-chart" width="800" height="320" style="width:100%;height:100%;cursor:grab;"></canvas>
+      <div style="position:relative;height:520px;">
+        <canvas id="history-chart" width="1200" height="480" style="width:100%;height:100%;cursor:grab;"></canvas>
       </div>
       <div id="history-msg" class="history-msg"></div>
     </div>
@@ -598,6 +599,7 @@ function showHistoryModal(terminalId, terminalName) {
   const chartCanvas = modal.querySelector('#history-chart');
   const statsBtn = modal.querySelector('.stats-btn');
   const exportBtn = modal.querySelector('.export-btn');
+  const resetBtn = modal.querySelector('.reset-btn');
   const titleInput = modal.querySelector('.graph-title-input[placeholder*="Graph Title"]');
   const startInput = modal.querySelector('.range-start');
   const endInput = modal.querySelector('.range-end');
@@ -773,6 +775,40 @@ function showHistoryModal(terminalId, terminalName) {
     document.addEventListener('click', closer);
   });
 
+  // Reset button handler - restores chart to original position (full loaded data range)
+  resetBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    try {
+      if (!_activeChart) return;
+      // If we have currentRows, use their full range as original
+      if (currentRows && currentRows.length > 0) {
+        const firstTs = Date.parse(currentRows[0].timestamp);
+        const lastTs = Date.parse(currentRows[currentRows.length - 1].timestamp);
+        if (!isNaN(firstTs) && !isNaN(lastTs)) {
+          // Clear plugin-managed zoom state if possible
+          if (typeof _activeChart.resetZoom === 'function') {
+            try { _activeChart.resetZoom(); } catch (e) { /* ignore */ }
+          }
+          // Ensure the visible x range matches the full data range
+          _activeChart.options.scales.x.min = firstTs;
+          _activeChart.options.scales.x.max = lastTs;
+          _activeChart.update();
+          return;
+        }
+      }
+      // Fallback: try plugin resetZoom or clear min/max
+      if (typeof _activeChart.resetZoom === 'function') {
+        _activeChart.resetZoom();
+      } else {
+        delete _activeChart.options.scales.x.min;
+        delete _activeChart.options.scales.x.max;
+        _activeChart.update();
+      }
+    } catch (err) {
+      console.warn('Reset failed', err && err.message);
+    }
+  });
+
   /* ---------------------------
      Chart creation + zoom/pan
      --------------------------- */
@@ -797,11 +833,12 @@ function showHistoryModal(terminalId, terminalName) {
           data,
           parsing: { xAxisKey: 'x', yAxisKey: 'y' },
           fill: true,
-          borderColor: 'rgba(239,68,68,0.95)',
-          backgroundColor: 'rgba(239,68,68,0.12)',
-          pointBackgroundColor: 'rgba(239,68,68,0.95)',
+          // purple-ish blue theme:
+          borderColor: 'rgba(88,86,214,0.95)',
+          backgroundColor: 'rgba(88,86,214,0.12)',
+          pointBackgroundColor: 'rgba(88,86,214,0.95)',
           pointBorderColor: '#ffffff',
-          pointRadius: Math.min(3, Math.round(800 / Math.max(1, data.length * 0.5))),
+          pointRadius: Math.min(3, Math.round(1200 / Math.max(1, data.length * 0.5))),
           pointHoverRadius: 6,
           spanGaps: false,
           cubicInterpolationMode: 'monotone'
@@ -847,6 +884,15 @@ function showHistoryModal(terminalId, terminalName) {
     };
 
     _activeChart = new Chart(ctx, cfg);
+
+    // Set initial visible range to full dataset
+    const firstTs = data.length ? Date.parse(data[0].x) : null;
+    const lastTs = data.length ? Date.parse(data[data.length - 1].x) : null;
+    if (!isNaN(firstTs) && !isNaN(lastTs)) {
+      _activeChart.options.scales.x.min = firstTs;
+      _activeChart.options.scales.x.max = lastTs;
+      _activeChart.update('none');
+    }
 
     // Implement custom inverted drag panning (hold left mouse button and drag)
     let isDragging = false;

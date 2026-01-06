@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css" />
   <style>
     /* Minimal modal styling for history chart - stronger dim so the whole app fades to black behind the modal */
+    /* Increased overall modal size: wider and taller while keeping the same internal layout */
     .history-modal {
       position: fixed;
       inset: 0;
@@ -15,14 +16,14 @@
       justify-content: center;
       background: rgba(0,0,0,0.88);
       z-index: 1200;
-      padding: 20px;
+      padding: 32px;
     }
     .history-panel {
       width: 100%;
-      max-width: 980px;
+      max-width: 1200px; /* increased width */
       background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
       border-radius: 12px;
-      padding: 16px;
+      padding: 20px;
       color: var(--text);
       box-shadow: 0 20px 60px rgba(2,6,23,0.6);
       z-index: 1210;
