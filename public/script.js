@@ -93,6 +93,16 @@ function createCard(device) {
           <path d="M21 3v6h-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
+
+      <button class="history-btn" title="History" aria-label="Show history" type="button">
+        <!-- history / chart icon (simple) -->
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 3v18h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M7 14v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M12 14v-8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M17 14v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
     </div>
   `.trim();
 
@@ -312,6 +322,17 @@ function attachCardControls() {
         fetchAndUpdate(device, cardEl, true);
       });
     }
+
+    // history button
+    const historyBtn = cardEl.querySelector('.history-btn');
+    if (historyBtn) {
+      historyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const terminalId = cardEl.dataset.terminal;
+        const device = devices.find(d => d.id === terminalId) || {};
+        showHistoryModal(terminalId, device.name);
+      });
+    }
   });
 
   enableKeyboardReorder();
@@ -392,6 +413,550 @@ function reorderDevicesFromDOM() {
   const map = new Map(devices.map(d => [d.id, d]));
   devices = ids.map(id => map.get(id)).filter(Boolean);
   try { localStorage.setItem(ORDER_KEY, JSON.stringify(ids)); } catch (e) { /* ignore */ }
+}
+
+/* ---------------------------
+   History / Chart functionality
+   --------------------------- */
+
+async function fetchHistory(terminalId, limit = 2000) {
+  const url = `/api/history?terminalId=${encodeURIComponent(terminalId)}&limit=${encodeURIComponent(limit)}`;
+  const resp = await fetch(url, { cache: 'no-store' });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error || resp.statusText || 'Failed to load history');
+  }
+  return resp.json();
+}
+
+let _activeChart = null;
+
+function computeStats(values) {
+  const nums = values.filter(v => typeof v === 'number' && !isNaN(v));
+  if (nums.length === 0) return { min: null, max: null, avg: null, count: 0 };
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const avg = nums.reduce((s, n) => s + n, 0) / nums.length;
+  return { min, max, avg, count: nums.length };
+}
+
+function sanitizeFilename(name) {
+  if (!name) return '';
+  return name.replace(/[\/\\?%*:|"<>]/g, '-').trim();
+}
+
+// CSV download now includes only local timestamp + tank_level (and optional title line)
+function downloadCSV(filename, rows, title) {
+  const header = ['timestamp_local', 'tank_level'];
+  const lines = [];
+  if (title) {
+    lines.push(`"${String(title).replace(/"/g, '""')}"`);
+    lines.push(''); // blank line for readability
+  }
+  lines.push(header.join(','));
+  for (const r of rows) {
+    const local = (r.timestamp ? new Date(r.timestamp).toLocaleString() : '');
+    const val = (r.tank_level === null || r.tank_level === undefined) ? '' : String(r.tank_level);
+    const safe = [`"${local.replace(/"/g,'""')}"`, val].join(',');
+    lines.push(safe);
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportPdfFromChart(chart, filename = 'chart.pdf', title = '') {
+  try {
+    // jsPDF import (UMD)
+    const { jsPDF } = window.jspdf || {};
+    if (!jsPDF) throw new Error('jsPDF not available');
+
+    // Chart image as dataURL (png)
+    const imgData = chart.toBase64Image();
+
+    // Choose landscape and size that fits
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+    // compute available width/height in pts
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+
+    // create an Image to read its dimensions and preserve aspect ratio
+    const img = new Image();
+    img.src = imgData;
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+
+    const imgRatio = img.width / img.height;
+    // reserve vertical space for title if present
+    const titleHeight = title ? 34 : 0;
+    let w = pageWidth - 40; // leave some margin
+    let h = (pageHeight - 40 - titleHeight) ? (w / imgRatio) : (pageHeight - 40 - titleHeight);
+    if (h > pageHeight - 40 - titleHeight) {
+      h = pageHeight - 40 - titleHeight;
+      w = h * imgRatio;
+    }
+    const x = (pageWidth - w) / 2;
+    const y = (20 + titleHeight); // start image after top margin plus title area
+
+    // Draw title if provided
+    if (title) {
+      pdf.setFontSize(18);
+      pdf.setTextColor(20, 20, 20);
+      pdf.setFont(undefined, 'bold');
+      // center title
+      const textWidth = pdf.getTextWidth(title);
+      const titleX = Math.max(20, (pageWidth - textWidth) / 2);
+      const titleY = 26;
+      pdf.text(String(title), titleX, titleY);
+      // reset font
+      pdf.setFont(undefined, 'normal');
+    }
+
+    pdf.addImage(imgData, 'PNG', x, y, w, h);
+    pdf.save(filename);
+  } catch (err) {
+    throw new Error('PDF export failed: ' + (err && err.message));
+  }
+}
+
+/* Helper: fetch rows (with a given limit) then optionally filter by startMs/endMs.
+   Returns filtered rows (each row: {timestamp: ISO|null, tank_level: number|null}) */
+async function fetchAndFilterRows(terminalId, { limit = 2000, startMs = null, endMs = null } = {}) {
+  const data = await fetchHistory(terminalId, limit);
+  const rows = (data && data.rows) ? data.rows.slice() : [];
+  // If no start/end provided, return rows as-is
+  if (startMs == null && endMs == null) return rows;
+  const filtered = rows.filter(r => {
+    if (!r || !r.timestamp) return false;
+    const t = Date.parse(r.timestamp);
+    if (isNaN(t)) return false;
+    if (startMs != null && t < startMs) return false;
+    if (endMs != null && t > endMs) return false;
+    return true;
+  });
+  return filtered;
+}
+
+/* Utility: format ms -> datetime-local value "YYYY-MM-DDTHH:MM" (local time) */
+function toDatetimeLocalValue(ms) {
+  const d = new Date(ms);
+  const YYYY = d.getFullYear();
+  const MM = String(d.getMonth() + 1).padStart(2, '0');
+  const DD = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${YYYY}-${MM}-${DD}T${hh}:${mm}`;
+}
+
+function showHistoryModal(terminalId, terminalName) {
+  // modal DOM
+  const modal = document.createElement('div');
+  modal.className = 'history-modal';
+  modal.innerHTML = `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="History for ${escapeHtml(terminalName || terminalId)}">
+      <div class="history-actions">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong>${escapeHtml(terminalName || terminalId)}</strong>
+          <div class="history-range">
+            <!-- start/end datetime selectors -->
+            <input type="datetime-local" class="range-start graph-title-input" aria-label="Start time" />
+            <span style="color:var(--muted); font-size:13px;">to</span>
+            <input type="datetime-local" class="range-end graph-title-input" aria-label="End time" />
+            <button class="btn apply-range">Apply</button>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input class="graph-title-input" type="text" placeholder="Graph Title (used for export)" aria-label="Graph Title" />
+          <div class="history-controls">
+            <button class="btn stats-btn" type="button" title="Stats">Stats</button>
+            <button class="btn export-btn" type="button" title="Export">Export</button>
+            <button class="history-close" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+      <div style="position:relative;height:340px;">
+        <canvas id="history-chart" width="800" height="320" style="width:100%;height:100%;cursor:grab;"></canvas>
+      </div>
+      <div id="history-msg" class="history-msg"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // add page dimming state so everything behind fades to black
+  document.body.classList.add('modal-open');
+
+  const closeBtn = modal.querySelector('.history-close');
+  const msgEl = modal.querySelector('#history-msg');
+  const chartCanvas = modal.querySelector('#history-chart');
+  const statsBtn = modal.querySelector('.stats-btn');
+  const exportBtn = modal.querySelector('.export-btn');
+  const titleInput = modal.querySelector('.graph-title-input[placeholder*="Graph Title"]');
+  const startInput = modal.querySelector('.range-start');
+  const endInput = modal.querySelector('.range-end');
+  const applyBtn = modal.querySelector('.apply-range');
+
+  let currentRows = []; // keep loaded rows for exports/stats
+  let statsDropdown = null;
+  let exportDropdown = null;
+
+  function removeModal() {
+    if (_activeChart) { _activeChart.destroy(); _activeChart = null; }
+    if (statsDropdown) { statsDropdown.remove(); statsDropdown = null; }
+    if (exportDropdown) { exportDropdown.remove(); exportDropdown = null; }
+    modal.remove();
+    document.body.classList.remove('modal-open');
+  }
+
+  closeBtn.addEventListener('click', () => {
+    removeModal();
+  });
+
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) removeModal();
+  });
+
+  // Helper to load & render a given start/end range (ms). If startMs/endMs null -> loads default last N rows.
+  async function loadRange({ startMs = null, endMs = null, limit = 500 } = {}) {
+    try {
+      msgEl.textContent = 'Loading...';
+      if (_activeChart) { _activeChart.clear(); }
+      // If start/end provided, request large limit so client filtering is reliable
+      const fetchLimit = (startMs != null || endMs != null) ? 50000 : limit;
+      const rows = await fetchAndFilterRows(terminalId, { limit: fetchLimit, startMs, endMs });
+      currentRows = rows;
+      if (!rows || rows.length === 0) {
+        msgEl.textContent = 'No history data available for that range.';
+        if (_activeChart) { _activeChart.destroy(); _activeChart = null; }
+        return;
+      }
+      msgEl.textContent = '';
+      const labels = currentRows.map(r => r.timestamp);
+      const values = currentRows.map(r => (r.tank_level === null ? NaN : Number(r.tank_level)));
+      createChart(labels, values, chartCanvas);
+      // auto-populate start/end inputs with actual range (optional)
+      const firstTs = currentRows[0] && currentRows[0].timestamp ? Date.parse(currentRows[0].timestamp) : null;
+      const lastTs = currentRows[currentRows.length-1] && currentRows[currentRows.length-1].timestamp ? Date.parse(currentRows[currentRows.length-1].timestamp) : null;
+      if (firstTs && lastTs) {
+        // set inputs to reflect actual loaded range
+        if (startInput && endInput) {
+          startInput.value = toDatetimeLocalValue(firstTs);
+          endInput.value = toDatetimeLocalValue(lastTs);
+        }
+      }
+    } catch (err) {
+      msgEl.textContent = 'Failed to load history: ' + (err && err.message);
+    }
+  }
+
+  // Apply range handler: read datetime-local inputs, convert to ms, and load
+  applyBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const startVal = startInput.value; // e.g. "2026-01-06T11:00"
+    const endVal = endInput.value;
+    if (!startVal && !endVal) {
+      msgEl.textContent = 'Please set a start and/or end time to filter.';
+      return;
+    }
+    const startMs = startVal ? new Date(startVal).getTime() : null;
+    const endMs = endVal ? new Date(endVal).getTime() : null;
+    if (startMs != null && isNaN(startMs)) {
+      msgEl.textContent = 'Invalid start time.';
+      return;
+    }
+    if (endMs != null && isNaN(endMs)) {
+      msgEl.textContent = 'Invalid end time.';
+      return;
+    }
+    if (startMs != null && endMs != null && startMs > endMs) {
+      msgEl.textContent = 'Start time must be before end time.';
+      return;
+    }
+    await loadRange({ startMs, endMs });
+  });
+
+  // Stats button handler
+  statsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (statsDropdown) { statsDropdown.remove(); statsDropdown = null; return; }
+
+    const pos = statsBtn.getBoundingClientRect();
+    statsDropdown = document.createElement('div');
+    statsDropdown.className = 'dropdown modal-dropdown';
+    statsDropdown.style.top = (pos.bottom + 8) + 'px';
+    statsDropdown.style.left = (pos.left) + 'px';
+
+    const stats = computeStats(currentRows.map(r => (r.tank_level === null ? NaN : Number(r.tank_level))));
+    const fmt = v => (v == null ? '—' : (Math.round(v * 100) / 100).toString());
+
+    statsDropdown.innerHTML = `
+      <div class="dropdown-row"><div>Count</div><div>${stats.count}</div></div>
+      <div class="dropdown-row"><div>Min</div><div>${fmt(stats.min)}</div></div>
+      <div class="dropdown-row"><div>Max</div><div>${fmt(stats.max)}</div></div>
+      <div class="dropdown-row"><div>Avg</div><div>${fmt(stats.avg)}</div></div>
+    `;
+    document.body.appendChild(statsDropdown);
+
+    const closer = (ev) => {
+      if (!statsDropdown) return;
+      if (!ev.target.closest('.dropdown') && ev.target !== statsBtn) {
+        statsDropdown.remove(); statsDropdown = null;
+        document.removeEventListener('click', closer);
+      }
+    };
+    document.addEventListener('click', closer);
+  });
+
+  // Export button handler — dropdown remains interactive while page is dimmed
+  exportBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (exportDropdown) { exportDropdown.remove(); exportDropdown = null; return; }
+
+    const pos = exportBtn.getBoundingClientRect();
+    exportDropdown = document.createElement('div');
+    exportDropdown.className = 'dropdown modal-dropdown';
+    exportDropdown.style.top = (pos.bottom + 8) + 'px';
+    exportDropdown.style.left = (pos.left) + 'px';
+    exportDropdown.innerHTML = `
+      <div class="dropdown-row"><div><button class="btn export-csv">Export CSV</button></div></div>
+      <div class="dropdown-row"><div><button class="btn export-pdf">Export PDF</button></div></div>
+    `;
+    document.body.appendChild(exportDropdown);
+
+    const readTitle = () => {
+      const t = (titleInput && titleInput.value) ? String(titleInput.value).trim() : '';
+      return t || '';
+    };
+
+    exportDropdown.querySelector('.export-csv').addEventListener('click', () => {
+      try {
+        const title = readTitle();
+        const safe = sanitizeFilename(title) || `${terminalId}_history`;
+        const filename = `${safe}.csv`;
+        // currentRows already contains filtered rows (or default last N rows)
+        downloadCSV(filename, currentRows, title);
+      } catch (err) {
+        alert('CSV export failed: ' + (err && err.message));
+      } finally {
+        if (exportDropdown) { exportDropdown.remove(); exportDropdown = null; }
+      }
+    });
+
+    exportDropdown.querySelector('.export-pdf').addEventListener('click', async () => {
+      try {
+        if (!_activeChart) throw new Error('No chart available');
+        const title = readTitle();
+        const safe = sanitizeFilename(title) || `${terminalId}_history`;
+        const filename = `${safe}.pdf`;
+        await exportPdfFromChart(_activeChart, filename, title);
+      } catch (err) {
+        alert('PDF export failed: ' + (err && err.message));
+      } finally {
+        if (exportDropdown) { exportDropdown.remove(); exportDropdown = null; }
+      }
+    });
+
+    const closer = (ev) => {
+      if (!exportDropdown) return;
+      if (!ev.target.closest('.dropdown') && ev.target !== exportBtn) {
+        exportDropdown.remove(); exportDropdown = null;
+        document.removeEventListener('click', closer);
+      }
+    };
+    document.addEventListener('click', closer);
+  });
+
+  /* ---------------------------
+     Chart creation + zoom/pan
+     --------------------------- */
+
+  // NOTE: createChart accepts the chartCanvas element so it can be called from multiple places. It will set _activeChart.
+  function createChart(labels, values, canvasEl) {
+    if (_activeChart) {
+      try { _activeChart.destroy(); } catch(e) { /* ignore */ }
+      _activeChart = null;
+    }
+
+    const ctx = canvasEl.getContext('2d');
+
+    // Prepare dataset: Chart.js time axis will parse ISO strings and display in local timezone via luxon adapter
+    const data = labels.map((lab, i) => ({ x: lab, y: (values[i] === null ? NaN : values[i]) }));
+
+    const cfg = {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: 'Tank level (%)',
+          data,
+          parsing: { xAxisKey: 'x', yAxisKey: 'y' },
+          fill: true,
+          borderColor: 'rgba(239,68,68,0.95)',
+          backgroundColor: 'rgba(239,68,68,0.12)',
+          pointBackgroundColor: 'rgba(239,68,68,0.95)',
+          pointBorderColor: '#ffffff',
+          pointRadius: Math.min(3, Math.round(800 / Math.max(1, data.length * 0.5))),
+          pointHoverRadius: 6,
+          spanGaps: false,
+          cubicInterpolationMode: 'monotone'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'time',
+            time: {
+              tooltipFormat: 'DD MMM yyyy, t',
+              displayFormats: {
+                millisecond: 'HH:mm:ss',
+                second: 'HH:mm:ss',
+                minute: 'HH:mm',
+                hour: 'dd LLL HH:mm',
+                day: 'dd LLL',
+                month: 'MMM yyyy',
+                year: 'yyyy'
+              }
+            },
+            ticks: { autoSkip: true, maxTicksLimit: 12 },
+          },
+          y: {
+            display: true,
+            beginAtZero: true,
+            suggestedMax: 100,
+            title: { display: true, text: '%' }
+          }
+        },
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { mode: 'index', callbacks: {} },
+          zoom: {
+            zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
+            pan: { enabled: false }
+          }
+        },
+      }
+    };
+
+    _activeChart = new Chart(ctx, cfg);
+
+    // Implement custom inverted drag panning (hold left mouse button and drag)
+    let isDragging = false;
+    let lastX = null;
+
+    function toMillis(v) {
+      if (v == null) return NaN;
+      if (typeof v === 'number' && !isNaN(v)) return v;
+      if (v instanceof Date) return v.getTime();
+      const parsed = Date.parse(String(v));
+      return isNaN(parsed) ? NaN : parsed;
+    }
+
+    function getXValueForPixelSafe(pixelX) {
+      try {
+        const raw = _activeChart.scales.x.getValueForPixel(pixelX);
+        return toMillis(raw);
+      } catch (e) {
+        const area = _activeChart.chartArea;
+        const left = area.left;
+        const right = area.right;
+        const minRaw = _activeChart.scales.x.min ?? _activeChart.scales.x.getValueForPixel(left);
+        const maxRaw = _activeChart.scales.x.max ?? _activeChart.scales.x.getValueForPixel(right);
+        const minMs = toMillis(minRaw);
+        const maxMs = toMillis(maxRaw);
+        const ratio = (pixelX - left) / (right - left);
+        return minMs + (ratio * (maxMs - minMs));
+      }
+    }
+
+    function onPointerDown(e) {
+      if (e.button !== 0) return; // left button only
+      isDragging = true;
+      canvasEl.style.cursor = 'grabbing';
+      lastX = e.clientX;
+      e.preventDefault();
+    }
+
+    async function onPointerMove(e) {
+      if (!isDragging || !_activeChart) return;
+      const rect = canvasEl.getBoundingClientRect();
+      const lastPixel = lastX - rect.left;
+      const curPixel = e.clientX - rect.left;
+      const lastTime = getXValueForPixelSafe(lastPixel);
+      const curTime = getXValueForPixelSafe(curPixel);
+
+      if (isNaN(lastTime) || isNaN(curTime)) return;
+
+      const shift = lastTime - curTime;
+
+      const area = _activeChart.chartArea;
+      const left = area.left;
+      const right = area.right;
+      const oldMinRaw = _activeChart.scales.x.min ?? _activeChart.scales.x.getValueForPixel(left);
+      const oldMaxRaw = _activeChart.scales.x.max ?? _activeChart.scales.x.getValueForPixel(right);
+      const oldMin = toMillis(oldMinRaw);
+      const oldMax = toMillis(oldMaxRaw);
+      if (isNaN(oldMin) || isNaN(oldMax)) return;
+
+      const newMin = oldMin + shift;
+      const newMax = oldMax + shift;
+
+      _activeChart.options.scales.x.min = newMin;
+      _activeChart.options.scales.x.max = newMax;
+      _activeChart.update('none');
+
+      lastX = e.clientX;
+      e.preventDefault();
+    }
+
+    function onPointerUp() {
+      if (!isDragging) return;
+      isDragging = false;
+      canvasEl.style.cursor = 'grab';
+      lastX = null;
+    }
+
+    canvasEl.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('mousemove', onPointerMove);
+    window.addEventListener('mouseup', onPointerUp);
+    canvasEl.addEventListener('mouseleave', onPointerUp);
+
+    const origDestroy = _activeChart.destroy;
+    _activeChart.destroy = function() {
+      try {
+        canvasEl.removeEventListener('mousedown', onPointerDown);
+        window.removeEventListener('mousemove', onPointerMove);
+        window.removeEventListener('mouseup', onPointerUp);
+        canvasEl.removeEventListener('mouseleave', onPointerUp);
+      } catch (e) { /* ignore */ }
+      return origDestroy.apply(this, arguments);
+    };
+
+    return _activeChart;
+  }
+
+  // On open: prefill start/end to "last hour" (NOW and NOW - 1 hour), then auto-load that range.
+  try {
+    const nowMs = Date.now();
+    const oneHourAgoMs = nowMs - 60 * 60 * 1000;
+    if (startInput && endInput) {
+      startInput.value = toDatetimeLocalValue(oneHourAgoMs);
+      endInput.value = toDatetimeLocalValue(nowMs);
+    }
+    // Immediately load last hour
+    loadRange({ startMs: oneHourAgoMs, endMs: nowMs });
+  } catch (e) {
+    // fallback: load default last 500 rows
+    loadRange({ limit: 500 });
+  }
 }
 
 /* ---------------------------

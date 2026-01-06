@@ -5,6 +5,34 @@
   <title>Tank Level — Sonic</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="style.css" />
+  <style>
+    /* Minimal modal styling for history chart - stronger dim so the whole app fades to black behind the modal */
+    .history-modal {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.88);
+      z-index: 1200;
+      padding: 20px;
+    }
+    .history-panel {
+      width: 100%;
+      max-width: 980px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-radius: 12px;
+      padding: 16px;
+      color: var(--text);
+      box-shadow: 0 20px 60px rgba(2,6,23,0.6);
+      z-index: 1210;
+    }
+    .history-actions { display:flex; gap:8px; align-items:center; justify-content:space-between; margin-bottom:8px; }
+    .history-msg { margin-top:8px; color:var(--muted); font-size:13px; }
+    @media (max-width:640px){
+      .history-panel { padding:12px; }
+    }
+  </style>
 </head>
 <body>
   <header class="topbar">
@@ -33,6 +61,19 @@
   <footer class="footer">
     <span>Powered by Sonic</span>
   </footer>
+
+  <!-- Chart.js (used by the history modal/chart) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Luxon + adapter so Chart.js uses local timezone via the browser -->
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
+
+  <!-- Chart.js zoom/pan plugin (wheel zoom) -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2/dist/chartjs-plugin-zoom.min.js"></script>
+
+  <!-- jsPDF for PDF export -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 
   <script src="script.js"></script>
 </body>

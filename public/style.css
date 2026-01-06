@@ -1,17 +1,23 @@
 :root{
   --bg1: #0f172a;
   --bg2: #07103a;
-  --card: rgba(255,255,255,0.04);
-  --glass: rgba(255,255,255,0.06);
+  --card: rgba(255,255,255,0.04); /* restored blue-ish card surface */
+  --glass: rgba(255,255,255,0.04);
   --accent: #06B6D4;
-  --accent-2: #6366F1;
-  --text: #e6eef8;
-  --muted: #9aa8bf;
+  --accent-2: #ef4444;           /* red accent for charts / danger */
+  --text: #f4f8ff;               /* brighter foreground text */
+  --muted: #9fb0c6;              /* slightly brighter muted */
   --select-bg: rgba(255,255,255,0.03);
 
   --green: #22c55e;
   --orange: #f59e0b;
   --red: #ef4444;
+  --shadow-1: 0 12px 36px rgba(2,6,23,0.55);
+
+  /* layout tokens */
+  --radius: 12px;
+  --card-padding: 22px;
+  --gap: 12px;
 }
 
 /* baseline */
@@ -27,6 +33,24 @@ body{
   display:flex;
   flex-direction:column;
   min-height:100vh;
+}
+
+/* When a modal is open, dim everything except the modal and modal-dropdowns */
+body.modal-open > :not(.history-modal):not(.modal-dropdown) {
+  transition: filter .28s ease, opacity .28s ease;
+  filter: brightness(0.08) saturate(0.9);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  opacity: 0.98;
+}
+
+/* keep modal-dropdowns interactive and visible */
+.modal-dropdown {
+  z-index: 10070 !important;
+  position: fixed !important;
 }
 
 /* Header — inline logo + brand (refined to be more prominent but balanced) */
@@ -59,7 +83,7 @@ body{
   border-radius:12px;
   padding:10px;             /* breathing room around the mark */
   border:1px solid rgba(255,255,255,0.06);
-  box-shadow: 0 12px 36px rgba(2,6,23,0.55);
+  box-shadow: var(--shadow-1);
   transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
@@ -117,10 +141,12 @@ body{
 /* Card base — slightly larger for better readability */
 .card{
   background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  /* use var(--card) as underlying surface color (subtle blue-ish) */
+  background-color: var(--card);
   border: 1px solid rgba(255,255,255,0.04);
-  padding:22px;
+  padding:var(--card-padding);
   border-radius:14px;
-  box-shadow: 0 10px 30px rgba(2,6,23,0.45);
+  box-shadow: var(--shadow-1);
   min-height:150px;
   display:flex;
   flex-direction:column;
@@ -140,7 +166,7 @@ body{
 
 /* Selected card (keyboard) */
 .card.selected{
-  outline: 2px solid rgba(99,102,241,0.22);
+  outline: none;
   box-shadow: 0 22px 48px rgba(2,6,23,0.6);
   transform: translateY(-6px) scale(1.02);
 }
@@ -201,7 +227,7 @@ body{
 
 /* metadata and footer */
 .meta{margin-top:12px;color:var(--muted);font-size:13px;display:flex;gap:18px;flex-wrap:wrap}
-.card-footer{margin-top:12px;display:flex;align-items:center;gap:8px;flex-direction:column}
+.card-footer{margin-top:16px;display:flex;align-items:center;gap:12px;flex-direction:column}
 
 /* spinner — moved to card top-right */
 .card .card-spinner{
@@ -290,7 +316,7 @@ body{
   border:1px solid rgba(255,255,255,0.03);
   border-radius:8px;
   cursor:pointer;
-  transition: background 120ms, transform 120ms, color 120ms;
+  transition: background 120ms, transform 120ms, color 120ms, box-shadow 120ms;
   opacity:0;
   transform: translateY(-6px) scale(0.98);
   pointer-events:none;
@@ -306,6 +332,38 @@ body{
 .refresh-btn:active{ transform: translateY(0) scale(.98); }
 .refresh-btn:focus{ outline:2px solid rgba(99,102,241,0.18); }
 
+/* unified .btn used in modal controls - prominent */
+.btn {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  height:36px;
+  padding:0 12px;
+  border-radius:8px;
+  border: none;
+  background: var(--accent);
+  color: #041226;
+  font-weight:700;
+  cursor:pointer;
+  box-shadow: 0 8px 20px rgba(3,7,18,0.5);
+  transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+}
+.btn:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(3,7,18,0.55); }
+.btn:active { transform: translateY(0); box-shadow: 0 6px 16px rgba(3,7,18,0.45); }
+
+/* Close button: make red and prominent */
+.history-close {
+  background: var(--accent-2);
+  color: #fff;
+  border-radius:8px;
+  padding:8px 12px;
+  border: none;
+  font-weight:700;
+  cursor:pointer;
+  box-shadow: 0 10px 28px rgba(239,68,68,0.18);
+}
+.history-close:hover { transform: translateY(-2px); }
+
 /* footer */
 .footer{
   text-align:center;
@@ -315,6 +373,153 @@ body{
   border-top: 1px solid rgba(255,255,255,0.02);
 }
 
+/* Modal / history styles (moved into CSS to centralize design) */
+.history-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.88);
+  z-index: 1200;
+  padding: 28px;
+}
+.history-panel {
+  width: 100%;
+  max-width: 980px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.01));
+  border-radius: 12px;
+  padding: 20px;
+  color: var(--text);
+  box-shadow: 0 30px 80px rgba(2,6,23,0.6);
+  border: 1px solid rgba(255,255,255,0.02);
+  overflow: hidden;
+}
+
+/* Header area inside modal: organized three-column layout */
+.history-actions {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+/* Left column: device title */
+.history-actions > div:first-child {
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.history-actions strong {
+  font-size:16px;
+  letter-spacing:0.3px;
+}
+
+/* Middle column: range inputs and apply */
+.history-range {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  background: transparent;
+}
+
+/* Inputs: graph title, range inputs */
+.graph-title-input,
+.history-panel input[type="datetime-local"] {
+  display:inline-block;
+  padding:10px 12px;
+  border-radius:8px;
+  border:1px solid rgba(255,255,255,0.04);
+  background: rgba(255,255,255,0.015);
+  color: var(--text);
+  font-size:14px;
+  outline:none;
+  min-width:200px;
+  box-shadow: inset 0 -1px 0 rgba(0,0,0,0.15);
+}
+.graph-title-input::placeholder { color: rgba(255,255,255,0.45); }
+.history-panel input[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert(1) hue-rotate(180deg) brightness(2); }
+
+/* Apply button next to inputs */
+.apply-range { height:36px; padding:0 14px; }
+
+/* Right column: actions stacked vertically for compactness */
+.history-actions > div:last-child {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:10px;
+}
+.history-controls { display:flex; gap:10px; align-items:center; }
+.history-controls .btn { min-width:86px; }
+
+/* Make stats/export buttons more compact and consistent */
+.stats-btn, .export-btn { min-width:86px; }
+
+/* Chart container styling */
+.history-panel > div[position="chart"],
+.history-panel > div[style*="height:"] {
+  border-radius:8px;
+  overflow:hidden;
+  background: transparent;
+  padding: 8px 4px 4px 4px;
+}
+
+/* Message below chart */
+.history-msg { margin-top:10px; color:var(--muted); font-size:13px; }
+
+/* Make graph/context dropdowns solid black and clearly visible */
+.dropdown {
+  position: absolute;
+  background: #000000 !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255,255,255,0.06);
+  padding:8px;
+  border-radius:8px;
+  min-width:160px;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.6);
+  z-index: 1300;
+  opacity: 1 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Dropdown buttons inside modal use subtle transparent style */
+.dropdown .btn { width:100%; justify-content:flex-start; gap:8px; background: transparent; color: var(--text); border: 1px solid rgba(255,255,255,0.04); box-shadow:none; padding:8px; border-radius:6px; }
+.dropdown .btn:hover { background: rgba(255,255,255,0.02); }
+
+/* Graph title input field (modal) — kept consistent with other inputs */
+.graph-title-input {
+  display:inline-block;
+  min-width:220px;
+  max-width:420px;
+  padding:8px 10px;
+  border-radius:8px;
+  border:1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.02);
+  color: var(--text);
+  font-size:14px;
+  outline: none;
+  transition: box-shadow .12s ease, transform .08s ease;
+}
+.graph-title-input::placeholder { color: rgba(255,255,255,0.45); }
+.graph-title-input:focus { box-shadow: 0 6px 20px rgba(6,11,26,0.6); transform: translateY(-2px); }
+
+/* Ensure inner elements inherit visible color/opacity */
+.chart-menu * ,
+.graph-context-menu * {
+  color: inherit !important;
+  opacity: 1 !important;
+}
+
+/* Safety-net: override inline opacity styles */
+.chart-menu[style*="opacity"],
+.graph-context-menu[style*="opacity"],
+.menu[style*="opacity"] {
+  opacity: 1 !important;
+}
+
 /* Responsive tweaks */
 @media (max-width:900px){
   .value{font-size:46px}
@@ -322,6 +527,9 @@ body{
   .logo-img{ width:108px; height:66px; }
   .brand h1{ font-size:22px; }
   .topbar{ min-height:120px; padding:22px 20px; }
+  .graph-title-input { min-width:160px; }
+  .history-actions { grid-template-columns: 1fr; }
+  .history-actions > div:last-child { align-items:flex-start; flex-direction:row; gap:8px; }
 }
 @media (max-width:640px){
   .value{font-size:38px}
@@ -331,4 +539,7 @@ body{
   .brand h1{font-size:18px}
   .subtitle{font-size:12px}
   .topbar{ min-height:96px; padding:14px 12px; }
+  .graph-title-input{ min-width:120px; font-size:13px; padding:8px 10px; }
+  .btn { height:44px; padding:0 16px; }
+  .history-controls .btn, .history-close { min-width:72px; }
 }

@@ -134,8 +134,44 @@ function validateTimestamp(ts) {
   return null;
 }
 
+// New helper: normalize DB timestamp values to an unambiguous UTC ISO string.
+// This avoids relying on the DB column type and ensures the frontend receives
+// a proper ISO timestamp that the browser will convert to local time correctly.
+function normalizeDbTimestampToIso(val) {
+  if (val == null) return null;
+  // If it's already a Date object, use toISOString()
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? null : val.toISOString();
+  }
+  const s = String(val).trim();
+  if (!s) return null;
+  // If it already includes timezone info (Z or +hh:mm or -hh:mm), parse directly.
+  if (/[Zz]|[+\-]\d{2}(:?\d{2})?$/.test(s)) {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  // Otherwise treat the timestamp as UTC by appending 'Z' and parse.
+  // Example: "2026-01-05 12:34:56" -> "2026-01-05 12:34:56Z"
+  const d = new Date(s + 'Z');
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 async function saveReadingsToDatabase() {
   if (cachedReadings.length === 0) return; // No data to save
+
+  // Deduplicate so we only insert one reading per terminal (the last reading seen for each id)
+  const latestById = new Map();
+  for (const reading of cachedReadings) {
+    // For simplicity we take the last occurrence for each id (overwrites previous),
+    // which corresponds to the most recent check for that terminal in the cached array.
+    latestById.set(reading.idVal, reading);
+  }
+
+  const toInsert = Array.from(latestById.values());
+  if (toInsert.length === 0) {
+    cachedReadings = [];
+    return;
+  }
 
   const client = await pool.connect();
   try {
@@ -144,7 +180,7 @@ async function saveReadingsToDatabase() {
       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP);
     `;
 
-    for (let reading of cachedReadings) {
+    for (let reading of toInsert) {
       await client.query(query, [
         reading.idVal,
         reading.snVal,
@@ -153,7 +189,7 @@ async function saveReadingsToDatabase() {
       ]);
     }
 
-    console.log(`Saved ${cachedReadings.length} readings to the database`);
+    console.log(`Saved ${toInsert.length} readings to the database (one per terminal)`);
     cachedReadings = []; // Clear the cache after successful save
   } catch (err) {
     console.warn('Failed to write periodic readings to tank_level table:', err.message);
@@ -162,7 +198,7 @@ async function saveReadingsToDatabase() {
   }
 }
 
-setInterval(saveReadingsToDatabase, 60000); // Save every 1 minute
+setInterval(saveReadingsToDatabase, 3000); // Save every 1 hour
 
 app.get('/api/tank', async (req, res) => {
   try {
@@ -221,6 +257,40 @@ app.get('/api/tank', async (req, res) => {
     return res.json({ value: rawValue, timestamp: timestampRaw, id: idField, sn: snField });
   } catch (err) {
     return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/history', async (req, res) => {
+  try {
+    const terminalId = req.query.terminalId;
+    if (!terminalId) return res.status(400).json({ error: 'terminalId query parameter is required' });
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '1000', 10) || 1, 1), 50000);
+
+    const client = await pool.connect();
+    try {
+      // IMPORTANT: select the table column named "current_timestamp" (not the SQL CURRENT_TIMESTAMP value).
+      // We alias it to inserted_at and then normalize it to an ISO string in JS below.
+      const query = `
+        SELECT "current_timestamp" AS inserted_at, tank_level
+        FROM tank_level
+        WHERE id = $1
+        ORDER BY "current_timestamp" ASC
+        LIMIT $2
+      `;
+      const result = await client.query(query, [terminalId, limit]);
+      const rows = result.rows.map(r => ({
+        // Normalize the DB value to an unambiguous UTC ISO string for the frontend.
+        timestamp: normalizeDbTimestampToIso(r.inserted_at),
+        tank_level: (r.tank_level === null || r.tank_level === undefined) ? null : Number(r.tank_level),
+      }));
+      res.json({ id: terminalId, count: rows.length, rows });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('History endpoint error', err && err.message);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
