@@ -198,7 +198,7 @@ async function saveReadingsToDatabase() {
   }
 }
 
-setInterval(saveReadingsToDatabase, 3000); // Save every 1 hour
+setInterval(saveReadingsToDatabase, 3600000); // Save every 1 hour
 
 app.get('/api/tank', async (req, res) => {
   try {

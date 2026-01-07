@@ -1,11 +1,11 @@
 // Devices to display — edit friendly names or IDs here
 let devices = [
-  { id: "230347", name: "ZERO.1 A — ZN000000099657" },
-  { id: "230344", name: "ZERO.1 B — ZN000000104508" },
-  { id: "230348", name: "ZERO.1 C — ZN000000103596" },
-  { id: "230345", name: "ZERO.1 D — ZN000000104344" },
-  { id: "230346", name: "ZERO.1 E — ZN000000104482" },
-  { id: "231544", name: "ZERO.1 F — ZN000000104512" }
+  { id: "230347", name: "Transmitter A — ZN000000099657" },
+  { id: "230344", name: "Transmitter B — ZN000000104508" },
+  { id: "230348", name: "Transmitter C — ZN000000103596" },
+  { id: "230345", name: "Transmitter D — ZN000000104344" },
+  { id: "230346", name: "Transmitter E — ZN000000104482" },
+  { id: "231544", name: "Transmitter F — ZN000000104512" }
 ];
 
 // Poll interval in milliseconds
@@ -874,7 +874,47 @@ function showHistoryModal(terminalId, terminalName) {
         interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { display: false },
-          tooltip: { mode: 'index', callbacks: {} },
+          tooltip: {
+            mode: 'index',
+            callbacks: {
+              // Custom title: show "Day Month Year" then the hour (keep hour format unchanged)
+              title: function(tooltipItems) {
+                if (!tooltipItems || tooltipItems.length === 0) return '';
+                const item = tooltipItems[0];
+                const rawX = (item.parsed && item.parsed.x !== undefined) ? item.parsed.x : item.label;
+
+                // Try Luxon first (loaded on the page). Fallback to Date.
+                const DateTime = (window.luxon && window.luxon.DateTime) ? window.luxon.DateTime : null;
+                let dt = null;
+                if (DateTime) {
+                  if (typeof rawX === 'number') {
+                    dt = DateTime.fromMillis(rawX);
+                  } else {
+                    dt = DateTime.fromISO(String(rawX));
+                    if (!dt.isValid) dt = DateTime.fromMillis(Date.parse(String(rawX)));
+                  }
+                  if (dt && dt.isValid) {
+                    // "dd LLL yyyy" (Day Month Year) + space + time as "hh:mm a" (keeps AM/PM form)
+                    return dt.toFormat('dd LLL yyyy') + ' ' + dt.toFormat('hh:mm a');
+                  }
+                }
+
+                // Fallback using native Date
+                const parsedMs = (typeof rawX === 'number') ? rawX : Date.parse(String(rawX));
+                if (!isNaN(parsedMs)) {
+                  const d = new Date(parsedMs);
+                  const dd = String(d.getDate()).padStart(2, '0');
+                  const monthShort = d.toLocaleString(undefined, { month: 'short' }); // e.g. "Jan"
+                  const yyyy = d.getFullYear();
+                  const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+                  // "06 Jan 2026 12:09 PM"
+                  return `${dd} ${monthShort} ${yyyy} ${timeStr}`;
+                }
+
+                return String(rawX);
+              }
+            }
+          },
           zoom: {
             zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
             pan: { enabled: false }
