@@ -23,7 +23,6 @@ const pool = new Pool({
 
 let dbAvailable = false;
 let lastDbError = null;
-let cachedReadings = []; // Store the readings for periodic saving
 
 async function testDb() {
   try {
@@ -134,127 +133,171 @@ function validateTimestamp(ts) {
   return null;
 }
 
-// New helper: normalize DB timestamp values to an unambiguous UTC ISO string.
-// This avoids relying on the DB column type and ensures the frontend receives
-// a proper ISO timestamp that the browser will convert to local time correctly.
+// Normalize DB timestamp values to an unambiguous UTC ISO string.
 function normalizeDbTimestampToIso(val) {
   if (val == null) return null;
-  // If it's already a Date object, use toISOString()
   if (val instanceof Date) {
     return isNaN(val.getTime()) ? null : val.toISOString();
   }
   const s = String(val).trim();
   if (!s) return null;
-  // If it already includes timezone info (Z or +hh:mm or -hh:mm), parse directly.
   if (/[Zz]|[+\-]\d{2}(:?\d{2})?$/.test(s)) {
     const d = new Date(s);
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
-  // Otherwise treat the timestamp as UTC by appending 'Z' and parse.
-  // Example: "2026-01-05 12:34:56" -> "2026-01-05 12:34:56Z"
   const d = new Date(s + 'Z');
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-async function saveReadingsToDatabase() {
-  if (cachedReadings.length === 0) return; // No data to save
+/* New: perform a SOAP fetch and return a normalized reading object.
+   Returns:
+   {
+     idVal, snVal, numericLevelVal, timestampVal, rawValue, timestampRaw
+   }
+*/
+async function getTankReading(terminalId) {
+  const soapBody = buildSoapBody(terminalId);
+  const headers = { 'Content-Type': 'text/xml; charset=utf-8' };
+  if (SOAP_ACTION) headers['SOAPAction'] = SOAP_ACTION;
+  if (SOAP_USERNAME) headers['Authorization'] = 'Basic ' + Buffer.from(`${SOAP_USERNAME}:${SOAP_PASSWORD}`).toString('base64');
 
-  // Deduplicate so we only insert one reading per terminal (the last reading seen for each id)
-  const latestById = new Map();
-  for (const reading of cachedReadings) {
-    // For simplicity we take the last occurrence for each id (overwrites previous),
-    // which corresponds to the most recent check for that terminal in the cached array.
-    latestById.set(reading.idVal, reading);
+  const response = await fetch(SOAP_URL, { method: 'POST', headers, body: soapBody });
+  const respText = await response.text().catch(() => '');
+
+  if (!response.ok) {
+    const msg = `Bad response from SOAP service: status=${response.status}`;
+    const err = new Error(msg);
+    err.detail = respText.slice(0, 1500);
+    err.status = response.status;
+    throw err;
   }
 
-  const toInsert = Array.from(latestById.values());
-  if (toInsert.length === 0) {
-    cachedReadings = [];
+  let parsed;
+  try {
+    parsed = await parseStringPromise(respText, { explicitArray: false, ignoreAttrs: false });
+  } catch (parseErr) {
+    const err = new Error('Failed to parse SOAP XML');
+    err.detail = parseErr && parseErr.message;
+    throw err;
+  }
+
+  const items = collectItems(parsed);
+
+  const target = items.find(item => {
+    const type = item && item['$'] && item['$']['xsi:type'];
+    const name = item && (item['Name'] || item['name']);
+    const nameText = nodeText(name) || '';
+    return type === 'ns1:InfoVariable' && nameText.trim().toUpperCase() === 'LIVELLO';
+  });
+
+  if (!target) {
+    const err = new Error('Device Offline or LIVELLO not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const infoTerminal = findInfoTerminal(parsed);
+  const terminalTopId = infoTerminal ? nodeText(infoTerminal.Id || infoTerminal.id) : null;
+  const terminalTopName = infoTerminal ? nodeText(infoTerminal.Name || infoTerminal.name) : null;
+
+  const valueKeys = ['Value','value'];
+  const timeKeys = ['Timestamp','timestamp'];
+
+  const rawValue = extractField(target, valueKeys);
+  const timestampRaw = extractField(target, timeKeys);
+  const timestampIso = validateTimestamp(timestampRaw);
+
+  const idField = terminalTopId || terminalId;
+  const snField = terminalTopName || extractField(target, ['SerialNumber','Serial','Name','NAME']);
+  const numericValue = parseNumericValue(rawValue);
+
+  return {
+    idVal: idField,
+    snVal: snField,
+    numericLevelVal: numericValue,
+    timestampVal: timestampIso,
+    rawValue,
+    timestampRaw,
+  };
+}
+
+/* Insert a single reading into the DB using the same column layout as before.
+   This is safe from SQL injection because parameterized queries are used.
+*/
+async function insertReading(client, reading) {
+  const query = `
+    INSERT INTO tank_level (id, sn, tank_level, timestamp, "current_timestamp")
+    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP);
+  `;
+  await client.query(query, [
+    reading.idVal,
+    reading.snVal,
+    reading.numericLevelVal,
+    reading.timestampVal,
+  ]);
+}
+
+/* Poll a list of terminal IDs (from TERMINAL_IDS env var) and save their readings.
+   Behavior:
+   - TERMINAL_IDS should be a comma-separated list of terminal IDs (strings).
+   - The job will attempt to read each terminal and write an INSERT for each successful read.
+   - Errors for individual terminals are logged and do not stop the loop; the job will attempt all terminals each run.
+*/
+async function pollTerminalsAndSave() {
+  const terminalsEnv = process.env.TERMINAL_IDS || '';
+  const terminalIds = terminalsEnv.split(',').map(s => s.trim()).filter(Boolean);
+
+  if (terminalIds.length === 0) {
+    console.warn('No TERMINAL_IDS configured; skipping scheduled poll. Set TERMINAL_IDS env var to a comma-separated list of IDs.');
     return;
   }
 
   const client = await pool.connect();
   try {
-    const query = `
-      INSERT INTO tank_level (id, sn, tank_level, timestamp, "current_timestamp")
-      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP);
-    `;
-
-    for (let reading of toInsert) {
-      await client.query(query, [
-        reading.idVal,
-        reading.snVal,
-        reading.numericLevelVal,
-        reading.timestampVal,
-      ]);
+    for (const tid of terminalIds) {
+      try {
+        const reading = await getTankReading(tid);
+        await insertReading(client, reading);
+        console.log(`Inserted reading for terminal ${reading.idVal} (sn=${reading.snVal})`);
+      } catch (err) {
+        // Individual terminal failure should not stop others
+        console.warn(`Failed to fetch/insert reading for terminal ${tid}:`, err && (err.message || err.status), err && err.detail ? `detail=${err.detail}` : '');
+      }
     }
-
-    console.log(`Saved ${toInsert.length} readings to the database (one per terminal)`);
-    cachedReadings = []; // Clear the cache after successful save
-  } catch (err) {
-    console.warn('Failed to write periodic readings to tank_level table:', err.message);
+  } catch (outerErr) {
+    console.warn('Error during pollTerminalsAndSave:', outerErr && outerErr.message);
   } finally {
     client.release();
   }
 }
 
-setInterval(saveReadingsToDatabase, 3600000); // Save every 1 hour
+// Schedule polling every hour (3600000 ms)
+const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '3600000', 10);
+setInterval(() => {
+  pollTerminalsAndSave().catch(e => console.warn('Scheduled poll error', e && e.message));
+}, POLL_INTERVAL_MS);
 
+// Optionally run once on startup (default true). Set POLL_ON_STARTUP=false to disable.
+const pollOnStartup = (process.env.POLL_ON_STARTUP || 'true').toLowerCase() !== 'false';
+if (pollOnStartup) {
+  pollTerminalsAndSave().catch(e => console.warn('Initial poll error', e && e.message));
+}
+
+/* API endpoints */
+
+// Return a live reading for a single terminal (no DB write here).
 app.get('/api/tank', async (req, res) => {
   try {
     const terminalId = req.query.terminalId;
     if (!terminalId) return res.status(400).json({ error: 'terminalId query parameter is required' });
 
-    const soapBody = buildSoapBody(terminalId);
-    const headers = { 'Content-Type': 'text/xml; charset=utf-8' };
-    if (SOAP_ACTION) headers['SOAPAction'] = SOAP_ACTION;
-    if (SOAP_USERNAME) headers['Authorization'] = 'Basic ' + Buffer.from(`${SOAP_USERNAME}:${SOAP_PASSWORD}`).toString('base64');
-
-    const response = await fetch(SOAP_URL, { method: 'POST', headers, body: soapBody });
-    const respText = await response.text().catch(() => '');
-
-    if (!response.ok) {
-      return res.status(502).json({ error: 'Bad response from SOAP service', status: response.status, body: respText.slice(0, 1500) });
-    }
-
-    let parsed;
     try {
-      parsed = await parseStringPromise(respText, { explicitArray: false, ignoreAttrs: false });
-    } catch (parseErr) {
-      return res.status(500).json({ error: 'Failed to parse SOAP XML', details: parseErr && parseErr.message });
+      const reading = await getTankReading(terminalId);
+      return res.json({ value: reading.rawValue, timestamp: reading.timestampRaw, id: reading.idVal, sn: reading.snVal });
+    } catch (err) {
+      if (err && err.status === 404) return res.status(404).json({ error: 'Device Offline' });
+      return res.status(502).json({ error: 'Failed to fetch SOAP data', message: err && err.message });
     }
-
-    const items = collectItems(parsed);
-
-    const target = items.find(item => {
-      const type = item && item['$'] && item['$']['xsi:type'];
-      const name = item && (item['Name'] || item['name']);
-      const nameText = nodeText(name) || '';
-      return type === 'ns1:InfoVariable' && nameText.trim().toUpperCase() === 'LIVELLO';
-    });
-
-    if (!target) {
-      return res.status(404).json({ error: 'Device Offline' });
-    }
-
-    const infoTerminal = findInfoTerminal(parsed);
-    const terminalTopId = infoTerminal ? nodeText(infoTerminal.Id || infoTerminal.id) : null;
-    const terminalTopName = infoTerminal ? nodeText(infoTerminal.Name || infoTerminal.name) : null;
-
-    const valueKeys = ['Value','value'];
-    const timeKeys = ['Timestamp','timestamp'];
-
-    const rawValue = extractField(target, valueKeys);
-    const timestampRaw = extractField(target, timeKeys);
-    const timestampIso = validateTimestamp(timestampRaw);
-
-    const idField = terminalTopId || terminalId;
-    const snField = terminalTopName || extractField(target, ['SerialNumber','Serial','Name','NAME']);
-    const numericValue = parseNumericValue(rawValue);
-
-    cachedReadings.push({ idVal: idField, snVal: snField, numericLevelVal: numericValue, timestampVal: timestampIso });
-
-    return res.json({ value: rawValue, timestamp: timestampRaw, id: idField, sn: snField });
   } catch (err) {
     return res.status(500).json({ error: 'Internal server error' });
   }
@@ -293,6 +336,52 @@ app.get('/api/history', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// Fetch titles for all terminals
+app.get('/api/titles', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    try {
+      const query = `SELECT "no", "terminal_id", "sn", "tank_title" FROM tank_titles ORDER BY "no" ASC`;
+      const result = await client.query(query);
+      res.json(result.rows);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Failed to fetch titles:', err);
+    res.status(500).json({ error: 'Failed to fetch titles' });
+  }
+});
+
+// Update or insert a title for a specific terminal
+app.post('/api/titles', express.json(), async (req, res) => {
+  const { terminalId, sn, title } = req.body;
+
+  if (!terminalId || !title) {
+    return res.status(400).json({ error: 'Missing terminalId or title' });
+  }
+
+  try {
+    const client = await pool.connect();
+    try {
+      const query = `
+        INSERT INTO tank_titles (terminal_id, sn, tank_title)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (terminal_id) DO UPDATE SET tank_title = $3
+        RETURNING *;
+      `;
+      const result = await client.query(query, [terminalId, sn, title]);
+      res.json(result.rows[0]);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Failed to save title:', err);
+    res.status(500).json({ error: 'Failed to save title' });
+  }
+});
+
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString(), dbAvailable });

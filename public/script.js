@@ -17,6 +17,60 @@ const ORDER_KEY = 'tank_order_v1';
 
 let selectedCard = null; // for keyboard-only reordering
 
+// Simple auth helper (in-memory flag set by the login modal during this page load)
+function isLoggedIn() {
+  try {
+    return !!window._clientAuthenticated;
+  } catch (e) {
+    return false;
+  }
+}
+
+//tank title codes
+
+// Load titles and update devices
+async function loadTitles() {
+  try {
+    const resp = await fetch('/api/titles', { cache: 'no-store' });
+    if (!resp.ok) throw new Error('Failed to fetch titles');
+    const titles = await resp.json();
+    const map = new Map(titles.map(t => [t.terminal_id, t.tank_title]));
+    devices.forEach(device => {
+      device.title = map.get(device.id) || device.name; // Default to "name" if no title exists
+    });
+  } catch (err) {
+    console.warn('Failed to load titles:', err.message);
+  }
+}
+
+// Allow users to edit titles and save to the server
+async function saveTitle(terminalId, sn, title) {
+  try {
+    const resp = await fetch('/api/titles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminalId, sn, title }),
+    });
+    if (!resp.ok) {
+      const json = await resp.json();
+      throw new Error(json.error || 'Failed to save title');
+    }
+  } catch (err) {
+    console.warn(`Failed to save title for terminal ${terminalId}:`, err.message);
+    alert('Failed to save title. Please try again.');
+  }
+}
+
+async function init() {
+  try {
+    await loadTitles(); // Load titles from the server
+    // The rest of the initialization logic goes here...
+  } catch (e) {
+    console.warn('Failed to initialize app:', e.message);
+  }
+}
+
+
 // Try to restore saved order from localStorage
 function restoreDeviceOrder() {
   try {
@@ -56,6 +110,10 @@ function createCard(device) {
   card.tabIndex = 0; // make focusable so user can click/focus and use keyboard
 
   card.innerHTML = `
+    <div class="title-edit-wrap">
+      <input type="text" class="title-input" value="${escapeHtml(device.title)}" aria-label="Edit tank title" />
+    </div>
+
     <div class="card-top">
       <div class="device-name">${escapeHtml(device.name)}</div>
       <div style="display:flex;align-items:center;gap:10px;">
@@ -105,6 +163,17 @@ function createCard(device) {
       </button>
     </div>
   `.trim();
+  
+  //card title codes
+  const titleInput = card.querySelector('.title-input');
+  titleInput.addEventListener('change', async () => {
+    const newTitle = titleInput.value.trim();
+    if (newTitle && newTitle !== device.title) {
+      device.title = newTitle; // Update locally
+      await saveTitle(device.id, device.sn, newTitle); // Save to the server
+    }
+  });
+
 
   // prevent the retry/refresh clicks from toggling selection
   card.querySelectorAll('button').forEach(b => {
@@ -269,6 +338,14 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
 
 // Build all cards and start polling
 function init() {
+  // prevent starting if not authenticated (for this page load)
+  if (!isLoggedIn()) {
+    return;
+  }
+
+  // mark started so subsequent events don't re-run init
+  window._app_started = true;
+
   if (!tanksContainer) return;
 
   // Restore any saved order
@@ -1048,8 +1125,15 @@ function showHistoryModal(terminalId, terminalName) {
 /* ---------------------------
    Init
    --------------------------- */
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
-}
+// Expose a named start function so the login script can call it after authentication
+window.appStart = init;
+
+// Always wait for the login event; the login modal shows on every page load.
+// When the login modal calls window.appStart() (after setting window._clientAuthenticated = true),
+// init() will run for this page load.
+const onLogin = function () {
+  if (window._app_started) return;
+  try { init(); } catch (e) { console.warn('Init after login failed', e); }
+  window.removeEventListener('app:login', onLogin);
+};
+window.addEventListener('app:login', onLogin);

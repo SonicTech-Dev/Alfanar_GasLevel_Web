@@ -36,6 +36,29 @@
   </style>
 </head>
 <body>
+  <!-- LOGIN MODAL (very simple, client-side) -->
+  <div id="login-modal" class="login-modal" role="dialog" aria-modal="true" aria-label="Login to Tank Level" style="display:none;">
+    <div class="login-panel" role="document">
+      <h2 style="margin:0 0 8px 0;">Please sign in</h2>
+      <p style="margin:0 0 12px 0;color:var(--muted);font-size:13px;">Enter your credentials to continue.</p>
+
+      <form id="login-form" autocomplete="off" style="display:flex;flex-direction:column;gap:8px;">
+        <label style="font-size:13px;color:var(--muted);">Username
+          <input id="login-username" name="username" type="text" autocomplete="username" class="graph-title-input" required />
+        </label>
+        <label style="font-size:13px;color:var(--muted);">Password
+          <input id="login-password" name="password" type="password" autocomplete="current-password" class="graph-title-input" required />
+        </label>
+
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+          <button type="submit" class="btn" style="min-width:96px;">Sign in</button>
+          <button type="button" id="login-cancel" class="history-close" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Cancel</button>
+          <div id="login-error" style="color:#ffdede;margin-left:8px;display:none;font-size:13px;"></div>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="brand-with-logo">
       <!-- Logo on the left, sized professionally -->
@@ -75,6 +98,89 @@
 
   <!-- jsPDF for PDF export -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+
+  <!--
+    SIMPLE CLIENT-SIDE LOGIN SCRIPT
+    - Credentials (as requested):
+      Username: Alfanar_GasLevel1
+      Password: GasLevel_Alfanar1
+
+    Behavior:
+    - Shows modal overlay when the site loads every time (no persistence).
+    - Authentication is required on each page load/refresh.
+    - After a successful sign-in the app is started for the current page load only.
+  -->
+  <script>
+    (function () {
+      const USERNAME = 'Alfanar_GasLevel1';
+      const PASSWORD = 'GasLevel_Alfanar1';
+
+      const modal = document.getElementById('login-modal');
+      const form = document.getElementById('login-form');
+      const usernameInput = document.getElementById('login-username');
+      const passwordInput = document.getElementById('login-password');
+      const errorEl = document.getElementById('login-error');
+      const cancelBtn = document.getElementById('login-cancel');
+
+      function showModal() {
+        modal.style.display = 'flex';
+        document.body.classList.add('modal-open');
+        setTimeout(() => usernameInput.focus(), 50);
+      }
+
+      function hideModal() {
+        modal.style.display = 'none';
+        document.body.classList.remove('modal-open');
+      }
+
+      // Always require login on every page load: show modal immediately
+      showModal();
+
+      // Form submit handler
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        errorEl.style.display = 'none';
+        const u = (usernameInput.value || '').trim();
+        const p = (passwordInput.value || '').trim();
+
+        // simple exact-match check
+        if (u === USERNAME && p === PASSWORD) {
+          // mark in-memory as authenticated for this page load
+          try { window._clientAuthenticated = true; } catch (e) { /* ignore */ }
+
+          hideModal();
+
+          // dispatch event that the rest of the app can listen to
+          try { window.dispatchEvent(new Event('app:login')); } catch (e) { /* ignore */ }
+
+          // If the app exposes a start function, call it immediately
+          try { if (typeof window.appStart === 'function') window.appStart(); } catch (e) { /* ignore */ }
+          return;
+        }
+
+        // wrong credentials
+        errorEl.textContent = 'Invalid username or password.';
+        errorEl.style.display = 'block';
+        passwordInput.value = '';
+        passwordInput.focus();
+      });
+
+      cancelBtn.addEventListener('click', function () {
+        // simply reload the page; since auth isn't persisted, reload will still show the login modal
+        try { window._clientAuthenticated = false; } catch (e) { /* ignore */ }
+        hideModal();
+        window.location.reload();
+      });
+
+      // Accessibility: pressing Escape when modal visible does nothing (to avoid accidentally bypassing)
+      modal.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') {
+          ev.stopPropagation();
+          ev.preventDefault();
+        }
+      });
+    })();
+  </script>
 
   <script src="script.js"></script>
 </body>
