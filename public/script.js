@@ -26,17 +26,41 @@ function isLoggedIn() {
   }
 }
 
-//tank title codes
+// Simple HTML escape
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
-// Load titles and update devices
+// Try to extract a serial number from the device name (after the "—" dash)
+function extractSnFromName(name) {
+  if (!name) return undefined;
+  const parts = String(name).split('—');
+  if (parts.length > 1) {
+    const sn = parts[1].trim();
+    return sn || undefined;
+  }
+  // fallback: find a ZN... pattern
+  const m = String(name).match(/\bZN[0-9]+\b/);
+  return m ? m[0] : undefined;
+}
+
+// Load titles from the backend and update devices
 async function loadTitles() {
   try {
     const resp = await fetch('/api/titles', { cache: 'no-store' });
     if (!resp.ok) throw new Error('Failed to fetch titles');
     const titles = await resp.json();
-    const map = new Map(titles.map(t => [t.terminal_id, t.tank_title]));
+    const map = new Map(titles.map(t => [String(t.terminal_id), t.tank_title]));
     devices.forEach(device => {
-      device.title = map.get(device.id) || device.name; // Default to "name" if no title exists
+      // Attach sn if not present
+      if (!device.sn) device.sn = extractSnFromName(device.name);
+      // Set the title from the fetched data, or use the existing device name as the default
+      device.title = map.get(String(device.id)) || device.title || device.name;
     });
   } catch (err) {
     console.warn('Failed to load titles:', err.message);
@@ -46,13 +70,15 @@ async function loadTitles() {
 // Allow users to edit titles and save to the server
 async function saveTitle(terminalId, sn, title) {
   try {
+    const body = { terminalId, title };
+    if (sn) body.sn = sn;
     const resp = await fetch('/api/titles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ terminalId, sn, title }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) {
-      const json = await resp.json();
+      const json = await resp.json().catch(() => ({}));
       throw new Error(json.error || 'Failed to save title');
     }
   } catch (err) {
@@ -60,16 +86,6 @@ async function saveTitle(terminalId, sn, title) {
     alert('Failed to save title. Please try again.');
   }
 }
-
-async function init() {
-  try {
-    await loadTitles(); // Load titles from the server
-    // The rest of the initialization logic goes here...
-  } catch (e) {
-    console.warn('Failed to initialize app:', e.message);
-  }
-}
-
 
 // Try to restore saved order from localStorage
 function restoreDeviceOrder() {
@@ -102,6 +118,36 @@ function persistDeviceOrder() {
   }
 }
 
+function parsePercent(valueStr) {
+  if (valueStr == null) return null;
+  const s = String(valueStr).trim().replace(',', '.').replace('%', '');
+  const m = s.match(/-?\d+(\.\d+)?/);
+  if (!m) return null;
+  return parseFloat(m[0]);
+}
+
+// status logic: GREEN if 30-70 inclusive, ORANGE if <30, RED if >70
+function setStatusColor(valueNum, valueEl, dotEl) {
+  // remove any previous status classes
+  dotEl.classList.remove('status-green', 'status-orange', 'status-red');
+  valueEl.classList.remove('muted');
+
+  // unknown / invalid => red + muted
+  if (valueNum == null || isNaN(valueNum)) {
+    dotEl.classList.add('status-red');
+    valueEl.classList.add('muted');
+    return;
+  }
+
+  if (valueNum >= 30 && valueNum <= 70) {
+    dotEl.classList.add('status-green');
+  } else if (valueNum < 30) {
+    dotEl.classList.add('status-orange');
+  } else { // valueNum > 70
+    dotEl.classList.add('status-red');
+  }
+}
+
 // Create a card element for a device
 function createCard(device) {
   const card = document.createElement('article');
@@ -109,11 +155,13 @@ function createCard(device) {
   card.dataset.terminal = device.id;
   card.tabIndex = 0; // make focusable so user can click/focus and use keyboard
 
+  // Ensure we have a serial cached
+  if (!device.sn) device.sn = extractSnFromName(device.name);
+
   card.innerHTML = `
     <div class="title-edit-wrap">
-      <input type="text" class="title-input" value="${escapeHtml(device.title)}" aria-label="Edit tank title" />
+      <input type="text" class="title-input" placeholder="Tank Title" value="${escapeHtml(device.title || '')}" />
     </div>
-
     <div class="card-top">
       <div class="device-name">${escapeHtml(device.name)}</div>
       <div style="display:flex;align-items:center;gap:10px;">
@@ -163,17 +211,31 @@ function createCard(device) {
       </button>
     </div>
   `.trim();
-  
-  //card title codes
+
+  // Title input behaviors:
   const titleInput = card.querySelector('.title-input');
-  titleInput.addEventListener('change', async () => {
+
+  // Stop keyboard shortcuts (Space/Enter) from bubbling to the card when editing title
+  titleInput.addEventListener('keydown', (e) => {
+    // Allow typing space in the title; prevent card-level handlers
+    if (e.key === ' ' || e.key === 'Spacebar' || e.key === 'Enter') {
+      e.stopPropagation();
+    }
+    // If user presses Enter, commit edit by blurring (then save in 'blur' handler)
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      titleInput.blur();
+    }
+  });
+
+  // Save on blur (not on each keystroke); this avoids accidental saves on Space
+  titleInput.addEventListener('blur', async () => {
     const newTitle = titleInput.value.trim();
     if (newTitle && newTitle !== device.title) {
       device.title = newTitle; // Update locally
       await saveTitle(device.id, device.sn, newTitle); // Save to the server
     }
   });
-
 
   // prevent the retry/refresh clicks from toggling selection
   card.querySelectorAll('button').forEach(b => {
@@ -187,8 +249,17 @@ function createCard(device) {
     selectCard(card);
   });
 
-  // keyboard: Enter toggles select, Space toggles select (prevent page scroll)
+  // keyboard shortcuts on card — ignore if the focused element is the title input (or any input/textarea)
   card.addEventListener('keydown', (e) => {
+    const target = e.target;
+    const isEditableEl =
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable ||
+      target.closest('.title-input');
+
+    if (isEditableEl) return; // do not hijack keyboard while editing text
+
     if (e.key === ' ' || e.key === 'Spacebar') {
       e.preventDefault();
       selectCard(card);
@@ -199,46 +270,6 @@ function createCard(device) {
   });
 
   return card;
-}
-
-// Simple HTML escape
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-function parsePercent(valueStr) {
-  if (valueStr == null) return null;
-  const s = String(valueStr).trim().replace(',', '.').replace('%', '');
-  const m = s.match(/-?\d+(\.\d+)?/);
-  if (!m) return null;
-  return parseFloat(m[0]);
-}
-
-// status logic: GREEN if 30-70 inclusive, ORANGE if <30, RED if >70
-function setStatusColor(valueNum, valueEl, dotEl) {
-  // remove any previous status classes
-  dotEl.classList.remove('status-green', 'status-orange', 'status-red');
-  valueEl.classList.remove('muted');
-
-  // unknown / invalid => red + muted
-  if (valueNum == null || isNaN(valueNum)) {
-    dotEl.classList.add('status-red');
-    valueEl.classList.add('muted');
-    return;
-  }
-
-  if (valueNum >= 30 && valueNum <= 70) {
-    dotEl.classList.add('status-green');
-  } else if (valueNum < 30) {
-    dotEl.classList.add('status-orange');
-  } else { // valueNum > 70
-    dotEl.classList.add('status-red');
-  }
 }
 
 // Fetch data for a single card and update UI
@@ -336,45 +367,6 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
   }
 }
 
-// Build all cards and start polling
-function init() {
-  // prevent starting if not authenticated (for this page load)
-  if (!isLoggedIn()) {
-    return;
-  }
-
-  // mark started so subsequent events don't re-run init
-  window._app_started = true;
-
-  if (!tanksContainer) return;
-
-  // Restore any saved order
-  restoreDeviceOrder();
-
-  // Clear container
-  tanksContainer.innerHTML = '';
-
-  // Build cards for all devices
-  devices.forEach(device => {
-    const card = createCard(device);
-    tanksContainer.appendChild(card);
-  });
-
-  // Attach refresh button handlers and keyboard-only reorder handlers
-  attachCardControls();
-
-  // Initial fetch for all cards — show spinner for the first fetch only
-  const cardEls = Array.from(document.querySelectorAll('.tank-card'));
-  cardEls.forEach(cardEl => {
-    const terminalId = cardEl.dataset.terminal;
-    const device = devices.find(d => d.id === terminalId);
-    if (device) fetchAndUpdate(device, cardEl, true);
-  });
-
-  // Polling: subsequent refreshes will NOT show the spinner (silent updates)
-  setInterval(refreshAll, POLL_INTERVAL_MS);
-}
-
 // Fetch for every device/card (silent updates)
 function refreshAll() {
   const cardEls = Array.from(document.querySelectorAll('.tank-card'));
@@ -405,9 +397,9 @@ function attachCardControls() {
     if (historyBtn) {
       historyBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const terminalId = cardEl.dataset.terminal;
-        const device = devices.find(d => d.id === terminalId) || {};
-        showHistoryModal(terminalId, device.name);
+        const tid = cardEl.dataset.terminal;
+        const dev = devices.find(d => d.id === tid) || {};
+        showHistoryModal(tid, dev.name);
       });
     }
   });
@@ -458,6 +450,17 @@ function enableKeyboardReorder() {
   // Global key handler when a card is selected
   document.addEventListener('keydown', (e) => {
     if (!selectedCard) return;
+
+    // Do not intercept if the user is typing in any input/textarea/contenteditable
+    const active = document.activeElement;
+    const editing =
+      active &&
+      (active.tagName === 'INPUT' ||
+       active.tagName === 'TEXTAREA' ||
+       active.isContentEditable ||
+       active.classList.contains('title-input'));
+    if (editing) return;
+
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       moveSelected('up');
@@ -1125,6 +1128,53 @@ function showHistoryModal(terminalId, terminalName) {
 /* ---------------------------
    Init
    --------------------------- */
+
+// Single, unified init that loads titles BEFORE building cards
+async function init() {
+  // prevent starting if not authenticated (for this page load)
+  if (!isLoggedIn()) {
+    return;
+  }
+
+  // mark started so subsequent events don't re-run init
+  window._app_started = true;
+
+  if (!tanksContainer) return;
+
+  try {
+    // Load titles from backend first so inputs show correct values on initial render
+    await loadTitles();
+  } catch (e) {
+    console.warn('Title load failed during init', e && e.message);
+  }
+
+  // Restore any saved order
+  restoreDeviceOrder();
+
+  // Clear container
+  tanksContainer.innerHTML = '';
+
+  // Build cards for all devices
+  devices.forEach(device => {
+    const card = createCard(device);
+    tanksContainer.appendChild(card);
+  });
+
+  // Attach refresh button handlers and keyboard-only reorder handlers
+  attachCardControls();
+
+  // Initial fetch for all cards — show spinner for the first fetch only
+  const cardEls = Array.from(document.querySelectorAll('.tank-card'));
+  cardEls.forEach(cardEl => {
+    const terminalId = cardEl.dataset.terminal;
+    const device = devices.find(d => d.id === terminalId);
+    if (device) fetchAndUpdate(device, cardEl, true);
+  });
+
+  // Polling: subsequent refreshes will NOT show the spinner (silent updates)
+  setInterval(refreshAll, POLL_INTERVAL_MS);
+}
+
 // Expose a named start function so the login script can call it after authentication
 window.appStart = init;
 
