@@ -80,6 +80,18 @@
     </section>
 
     <div id="global-error" class="error" style="display:none;"></div>
+
+    <!-- ADMIN MENU (hidden by default) -->
+    <aside id="admin-menu" class="admin-menu" role="region" aria-hidden="true" style="display:none;">
+      <div class="admin-menu-inner">
+        <h2>Administrator Menu.</h2>
+        <!-- Visitor Tracking button -->
+        <div>
+          <button id="visitor-tracking-btn" class="btn" type="button">Visitor Tracking</button>
+        </div>
+        <!-- Empty large menu area for future admin features -->
+      </div>
+    </aside>
   </main>
 
   <footer class="footer">
@@ -105,15 +117,26 @@
       Username: Alfanar_GasLevel1
       Password: GasLevel_Alfanar1
 
+    - ADMIN credentials (client-only example; change to what you want):
+      ADMIN_USERNAME: Admin_Gas
+      ADMIN_PASSWORD: Admin_Gas_1
+
     Behavior:
     - Shows modal overlay when the site loads every time (no persistence).
     - Authentication is required on each page load/refresh.
     - After a successful sign-in the app is started for the current page load only.
+    - Admin login sets window._clientIsAdmin = true so the app can reveal admin features.
+    - Each login attempt (success or failure) is logged to the server via POST /api/login-attempt.
+      The client never sends the password to the server.
   -->
   <script>
     (function () {
       const USERNAME = 'Alfanar_GasLevel1';
       const PASSWORD = 'GasLevel_Alfanar1';
+
+      // Admin credentials (client-side example)
+      const ADMIN_USERNAME = 'Sonic';
+      const ADMIN_PASSWORD = 'Sonic@123';
 
       const modal = document.getElementById('login-modal');
       const form = document.getElementById('login-form');
@@ -133,6 +156,24 @@
         document.body.classList.remove('modal-open');
       }
 
+      // Fire-and-forget logging helper. NEVER send passwords.
+      function logAttempt(username, isAdminAttempt, success, note) {
+        try {
+          const payload = {
+            username: String(username || '').trim(),
+            isAdminAttempt: !!isAdminAttempt,
+            success: !!success,
+            note: note ? String(note) : ''
+          };
+          // Fire and forget; do not await or block UI.
+          fetch('/api/login-attempt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          }).catch(() => { /* ignore logging errors */ });
+        } catch (e) { /* ignore */ }
+      }
+
       // Always require login on every page load: show modal immediately
       showModal();
 
@@ -142,11 +183,15 @@
         errorEl.style.display = 'none';
         const u = (usernameInput.value || '').trim();
         const p = (passwordInput.value || '').trim();
+        const isAdminAttempt = (u === ADMIN_USERNAME);
 
-        // simple exact-match check
-        if (u === USERNAME && p === PASSWORD) {
-          // mark in-memory as authenticated for this page load
+        // Admin exact-match check first
+        if (u === ADMIN_USERNAME && p === ADMIN_PASSWORD) {
+          // Log attempt (admin success)
+          logAttempt(u, true, true, 'admin login success');
+
           try { window._clientAuthenticated = true; } catch (e) { /* ignore */ }
+          try { window._clientIsAdmin = true; } catch (e) { /* ignore */ }
 
           hideModal();
 
@@ -158,7 +203,27 @@
           return;
         }
 
-        // wrong credentials
+        // simple exact-match check for normal user
+        if (u === USERNAME && p === PASSWORD) {
+          // Log attempt (normal user success)
+          logAttempt(u, false, true, 'user login success');
+
+          try { window._clientAuthenticated = true; } catch (e) { /* ignore */ }
+          try { window._clientIsAdmin = false; } catch (e) { /* ignore */ }
+
+          hideModal();
+
+          // dispatch event that the rest of the app can listen to
+          try { window.dispatchEvent(new Event('app:login')); } catch (e) { /* ignore */ }
+
+          // If the app exposes a start function, call it immediately
+          try { if (typeof window.appStart === 'function') window.appStart(); } catch (e) { /* ignore */ }
+          return;
+        }
+
+        // wrong credentials - log failure (mark as admin attempt if username matched admin user)
+        logAttempt(u, isAdminAttempt, false, 'invalid username/password');
+
         errorEl.textContent = 'Invalid username or password.';
         errorEl.style.display = 'block';
         passwordInput.value = '';
@@ -168,6 +233,7 @@
       cancelBtn.addEventListener('click', function () {
         // simply reload the page; since auth isn't persisted, reload will still show the login modal
         try { window._clientAuthenticated = false; } catch (e) { /* ignore */ }
+        try { window._clientIsAdmin = false; } catch (e) { /* ignore */ }
         hideModal();
         window.location.reload();
       });

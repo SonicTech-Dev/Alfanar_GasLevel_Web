@@ -40,6 +40,40 @@ testDb().catch(e => console.warn('DB test error', e && e.message));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// parse JSON bodies (used by several endpoints including login-attempt)
+app.use(express.json());
+
+/* Ensure login_attempts table exists */
+async function createLoginAttemptsTableIfNeeded() {
+  const createSql = `
+    CREATE TABLE IF NOT EXISTS login_attempts (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      is_admin_attempt BOOLEAN NOT NULL DEFAULT FALSE,
+      success BOOLEAN NOT NULL DEFAULT FALSE,
+      user_agent TEXT,
+      ip TEXT,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS login_attempts_created_idx ON login_attempts (created_at DESC);
+  `;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(createSql);
+      console.log('Ensured login_attempts table exists');
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Failed to create login_attempts table:', err && err.message);
+  }
+}
+
+// attempt to create the table on startup (non-blocking)
+createLoginAttemptsTableIfNeeded().catch(e => console.warn('Create table error', e && e.message));
+
 /* XML helpers */
 function nodeText(v) {
   if (v == null) return null;
@@ -283,7 +317,142 @@ if (pollOnStartup) {
   pollTerminalsAndSave().catch(e => console.warn('Initial poll error', e && e.message));
 }
 
-/* API endpoints */
+/* -------------------------
+   NEW: Login attempt endpoints
+   ------------------------- */
+
+// Helper to get client IP (respect x-forwarded-for if behind proxy)
+function getRequestIp(req) {
+  const xf = req.headers['x-forwarded-for'];
+  if (xf && typeof xf === 'string') {
+    return xf.split(',')[0].trim();
+  }
+  if (req.ip) return req.ip;
+  if (req.connection && req.connection.remoteAddress) return req.connection.remoteAddress;
+  return null;
+}
+
+// POST /api/login-attempt
+// Expected JSON body: { username: string, isAdminAttempt: boolean, success: boolean, note?: string }
+app.post('/api/login-attempt', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const username = body.username ? String(body.username).trim() : '';
+    const isAdminAttempt = !!body.isAdminAttempt;
+    const success = !!body.success;
+    const note = body.note ? String(body.note).trim().slice(0, 1000) : null;
+
+    if (!username) {
+      return res.status(400).json({ error: 'username is required' });
+    }
+
+    const ip = getRequestIp(req) || null;
+    const userAgent = req.get('user-agent') || null;
+
+    const insertSql = `
+      INSERT INTO login_attempts (username, is_admin_attempt, success, user_agent, ip, note)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, created_at;
+    `;
+    const params = [username, isAdminAttempt, success, userAgent, ip, note];
+
+    const client = await pool.connect();
+    try {
+      const r = await client.query(insertSql, params);
+      const inserted = r.rows && r.rows[0] ? r.rows[0] : null;
+      const created_at = inserted && inserted.created_at ? normalizeDbTimestampToIso(inserted.created_at) : new Date().toISOString();
+      return res.status(201).json({ ok: true, id: inserted && inserted.id, created_at });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('POST /api/login-attempt failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to record login attempt' });
+  }
+});
+
+// GET /api/login-attempts
+// Query params: limit, offset, isAdmin (1/0), success(1/0), username (partial), since (ISO), until (ISO)
+// If LOGIN_ATTEMPTS_READ_KEY is set, require header X-ADMIN-KEY to match.
+app.get('/api/login-attempts', async (req, res) => {
+  try {
+    const requiredKey = process.env.LOGIN_ATTEMPTS_READ_KEY || '';
+    if (requiredKey) {
+      const got = req.get('x-admin-key') || '';
+      if (got !== requiredKey) {
+        return res.status(403).json({ error: 'forbidden' });
+      }
+    }
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '200', 10) || 1, 1), 5000);
+    const offset = Math.max(parseInt(req.query.offset || '0', 10) || 0, 0);
+
+    const filters = [];
+    const params = [];
+
+    if (req.query.isAdmin !== undefined && (req.query.isAdmin === '1' || req.query.isAdmin === '0')) {
+      params.push(req.query.isAdmin === '1');
+      filters.push(`is_admin_attempt = $${params.length}`);
+    }
+    if (req.query.success !== undefined && (req.query.success === '1' || req.query.success === '0')) {
+      params.push(req.query.success === '1');
+      filters.push(`success = $${params.length}`);
+    }
+    if (req.query.username) {
+      params.push(`%${req.query.username}%`);
+      filters.push(`username ILIKE $${params.length}`);
+    }
+    if (req.query.since) {
+      const since = new Date(req.query.since);
+      if (!isNaN(since.getTime())) {
+        params.push(since.toISOString());
+        filters.push(`created_at >= $${params.length}`);
+      }
+    }
+    if (req.query.until) {
+      const until = new Date(req.query.until);
+      if (!isNaN(until.getTime())) {
+        params.push(until.toISOString());
+        filters.push(`created_at <= $${params.length}`);
+      }
+    }
+
+    const where = filters.length ? ('WHERE ' + filters.join(' AND ')) : '';
+
+    // limit and offset are always appended as the last two parameters
+    params.push(limit, offset);
+    const q = `
+      SELECT id, username, is_admin_attempt, success, user_agent, ip, note, created_at
+      FROM login_attempts
+      ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}
+    `;
+
+    const client = await pool.connect();
+    try {
+      const result = await client.query(q, params);
+      const rows = (result.rows || []).map(r => ({
+        id: r.id,
+        username: r.username,
+        is_admin_attempt: !!r.is_admin_attempt,
+        success: !!r.success,
+        user_agent: r.user_agent || null,
+        ip: r.ip || null,
+        note: r.note || null,
+        created_at: normalizeDbTimestampToIso(r.created_at),
+      }));
+      return res.json({ count: rows.length, rows });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/login-attempts failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to fetch login attempts' });
+  }
+});
+
+/* API endpoints (existing) */
 
 // Return a live reading for a single terminal (no DB write here).
 app.get('/api/tank', async (req, res) => {

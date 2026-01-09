@@ -455,6 +455,10 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
 .graph-title-input::placeholder { color: rgba(255,255,255,0.45); }
 .history-panel input[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert(1) hue-rotate(180deg) brightness(2); }
 
+.graph-title-input.select {
+  min-width: 160px;
+}
+
 /* Apply button next to inputs */
 .apply-range { height:36px; padding:0 14px; }
 
@@ -591,4 +595,69 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
   border:1px solid rgba(255,255,255,0.04);
   background: rgba(255,255,255,0.015);
   color: var(--text);
+}
+
+/* -----------------------------
+   ADMIN MENU STYLES
+   ----------------------------- */
+.admin-menu {
+  margin-top: 22px;
+  border-radius: 12px;
+  padding: 22px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005));
+  border: 1px solid rgba(255,255,255,0.04);
+  box-shadow: 0 18px 40px rgba(2,6,23,0.6);
+  min-height: 220px; /* large empty area */
+  display: none; /* default hidden; shown by script when admin */
+}
+.admin-menu-inner h2 {
+  margin: 0 0 12px 0;
+  font-size: 20px;
+  color: var(--text);
+  letter-spacing: 0.2px;
+}
+.admin-menu-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* subtle border accent to make admin menu stand out */
+.admin-menu {
+  position: relative;
+}
+.admin-menu::before {
+  content: "Administrator";
+  position: absolute;
+  top: -12px;
+  left: 20px;
+  background: transparent;
+  color: rgba(255,255,255,0.06);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+/* Make sure admin menu is responsive */
+@media (max-width:640px){
+  .admin-menu { padding: 14px; min-height: 160px; }
+  .admin-menu-inner h2 { font-size: 18px; }
+}
+
+/* -----------------------------
+   Visitor Tracking table styles
+   ----------------------------- */
+.tracking-table thead th {
+  font-weight:700;
+  font-size:13px;
+  color:var(--muted);
+}
+.tracking-table tbody td {
+  font-size:13px;
+  color:var(--text);
+}
+.tracking-table tr:nth-child(even) td {
+  background: rgba(255,255,255,0.01);
 }

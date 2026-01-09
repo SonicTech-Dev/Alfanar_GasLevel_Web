@@ -26,6 +26,15 @@ function isLoggedIn() {
   }
 }
 
+// New helper to detect admin login
+function isAdmin() {
+  try {
+    return !!window._clientIsAdmin;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Simple HTML escape
 function escapeHtml(text) {
   return String(text)
@@ -1126,6 +1135,157 @@ function showHistoryModal(terminalId, terminalName) {
 }
 
 /* ---------------------------
+   Visitor Tracking (Admin)
+   --------------------------- */
+
+async function fetchLoginAttempts({ limit = 200, offset = 0, isAdmin, success, username, since, until } = {}) {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  if (isAdmin !== undefined) params.set('isAdmin', isAdmin ? '1' : '0');
+  if (success !== undefined) params.set('success', success ? '1' : '0');
+  if (username) params.set('username', username);
+  if (since) params.set('since', since);
+  if (until) params.set('until', until);
+  const url = `/api/login-attempts?${params.toString()}`;
+  const resp = await fetch(url, { cache: 'no-store' });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error || resp.statusText || 'Failed to load login attempts');
+  }
+  return resp.json();
+}
+
+function formatDateTimeIso(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+function showVisitorTrackingModal() {
+  const modal = document.createElement('div');
+  modal.className = 'history-modal';
+  modal.innerHTML = `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="Visitor Tracking">
+      <div class="history-actions">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong>Visitor Tracking</strong>
+          <div class="history-range">
+            <input type="text" class="vt-username graph-title-input" placeholder="Filter username" />
+            <select class="vt-type graph-title-input" title="Type">
+              <option value="">All</option>
+              <option value="1">Admin attempts</option>
+              <option value="0">User attempts</option>
+            </select>
+            <select class="vt-success graph-title-input" title="Success">
+              <option value="">All</option>
+              <option value="1">Success</option>
+              <option value="0">Failure</option>
+            </select>
+            <button class="btn vt-apply">Apply</button>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="history-controls">
+            <button class="btn vt-refresh" type="button">Refresh</button>
+            <button class="history-close" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="max-height:520px; overflow:auto; padding:6px;">
+        <table class="tracking-table" style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);">Time</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);">Username</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);">Type</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);">Result</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);">IP</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);">User Agent</th>
+            </tr>
+          </thead>
+          <tbody class="tracking-body">
+            <tr><td colspan="6" style="padding:18px;color:var(--muted);">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div id="vt-msg" class="history-msg"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.body.classList.add('modal-open');
+
+  const closeBtn = modal.querySelector('.history-close');
+  const refreshBtn = modal.querySelector('.vt-refresh');
+  const applyBtn = modal.querySelector('.vt-apply');
+  const usernameFilter = modal.querySelector('.vt-username');
+  const typeFilter = modal.querySelector('.vt-type');
+  const successFilter = modal.querySelector('.vt-success');
+  const tbody = modal.querySelector('.tracking-body');
+  const msgEl = modal.querySelector('#vt-msg');
+
+  function removeModal() {
+    modal.remove();
+    document.body.classList.remove('modal-open');
+  }
+  closeBtn.addEventListener('click', () => removeModal());
+  modal.addEventListener('click', (e) => { if (e.target === modal) removeModal(); });
+
+  async function loadList() {
+    try {
+      msgEl.textContent = 'Loading...';
+      tbody.innerHTML = `<tr><td colspan="6" style="padding:18px;color:var(--muted);">Loading...</td></tr>`;
+      const limit = 500;
+      const params = { limit };
+      if (usernameFilter && usernameFilter.value) params.username = usernameFilter.value.trim();
+      if (typeFilter && typeFilter.value !== '') params.isAdmin = typeFilter.value === '1';
+      if (successFilter && successFilter.value !== '') params.success = successFilter.value === '1';
+
+      const json = await fetchLoginAttempts(params);
+      const rows = (json && json.rows) ? json.rows : [];
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" style="padding:18px;color:var(--muted);">No login attempts found for that filter.</td></tr>`;
+        msgEl.textContent = '';
+        return;
+      }
+      tbody.innerHTML = '';
+      for (const r of rows) {
+        const time = formatDateTimeIso(r.created_at);
+        const tUser = escapeHtml(r.username || '');
+        const type = r.is_admin_attempt ? 'Admin' : 'User';
+        const result = r.success ? '<span style="color:var(--green);font-weight:700">Success</span>' : '<span style="color:var(--red);font-weight:700">Failure</span>';
+        const ip = escapeHtml(r.ip || '');
+        const ua = escapeHtml((r.user_agent || '').slice(0, 180));
+        const note = escapeHtml(r.note || '');
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td style="padding:8px;border-top:1px solid rgba(255,255,255,0.02);vertical-align:top">${time}</td>
+          <td style="padding:8px;border-top:1px solid rgba(255,255,255,0.02);vertical-align:top">${tUser}${note ? `<div style="color:var(--muted);font-size:12px;margin-top:6px">${note}</div>` : ''}</td>
+          <td style="padding:8px;border-top:1px solid rgba(255,255,255,0.02);vertical-align:top">${type}</td>
+          <td style="padding:8px;border-top:1px solid rgba(255,255,255,0.02);vertical-align:top">${result}</td>
+          <td style="padding:8px;border-top:1px solid rgba(255,255,255,0.02);vertical-align:top">${ip}</td>
+          <td style="padding:8px;border-top:1px solid rgba(255,255,255,0.02);vertical-align:top;font-size:13px;color:var(--muted)}">${ua}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+      msgEl.textContent = '';
+    } catch (err) {
+      msgEl.textContent = 'Failed to load visitor tracking: ' + (err && err.message);
+      tbody.innerHTML = `<tr><td colspan="6" style="padding:18px;color:var(--muted);">Error loading attempts.</td></tr>`;
+    }
+  }
+
+  refreshBtn.addEventListener('click', (e) => { e.stopPropagation(); loadList(); });
+  applyBtn.addEventListener('click', (e) => { e.stopPropagation(); loadList(); });
+
+  // initial load
+  loadList();
+}
+
+/* ---------------------------
    Init
    --------------------------- */
 
@@ -1170,6 +1330,29 @@ async function init() {
     const device = devices.find(d => d.id === terminalId);
     if (device) fetchAndUpdate(device, cardEl, true);
   });
+
+  // If logged in as admin, reveal the Administrator Menu area
+  try {
+    const adminMenu = document.getElementById('admin-menu');
+    if (isAdmin() && adminMenu) {
+      adminMenu.style.display = 'block';
+      adminMenu.setAttribute('aria-hidden', 'false');
+
+      // Attach visitor tracking button handler
+      const vtBtn = document.getElementById('visitor-tracking-btn');
+      if (vtBtn) {
+        vtBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          showVisitorTrackingModal();
+        });
+      }
+    } else if (adminMenu) {
+      adminMenu.style.display = 'none';
+      adminMenu.setAttribute('aria-hidden', 'true');
+    }
+  } catch (e) {
+    console.warn('Failed to set admin menu visibility', e && e.message);
+  }
 
   // Polling: subsequent refreshes will NOT show the spinner (silent updates)
   setInterval(refreshAll, POLL_INTERVAL_MS);
