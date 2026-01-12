@@ -70,6 +70,25 @@ async function createLoginAttemptsTableIfNeeded() {
     console.warn('Failed to create login_attempts table:', err && err.message);
   }
 }
+// Get the last saved timestamp for a terminal from tank_level table
+async function getLastSavedTimestamp(terminalId) {
+  const client = await pool.connect();
+  try {
+    const sql = `
+      SELECT "current_timestamp" AS saved_at
+      FROM tank_level
+      WHERE id = $1
+      ORDER BY "current_timestamp" DESC
+      LIMIT 1
+    `;
+    const r = await client.query(sql, [terminalId]);
+    if (!r.rows || r.rows.length === 0) return null;
+    return normalizeDbTimestampToIso(r.rows[0].saved_at);
+  } finally {
+    client.release();
+  }
+}
+
 
 // attempt to create the table on startup (non-blocking)
 createLoginAttemptsTableIfNeeded().catch(e => console.warn('Create table error', e && e.message));
@@ -455,6 +474,7 @@ app.get('/api/login-attempts', async (req, res) => {
 /* API endpoints (existing) */
 
 // Return a live reading for a single terminal (no DB write here).
+
 app.get('/api/tank', async (req, res) => {
   try {
     const terminalId = req.query.terminalId;
@@ -462,7 +482,15 @@ app.get('/api/tank', async (req, res) => {
 
     try {
       const reading = await getTankReading(terminalId);
-      return res.json({ value: reading.rawValue, timestamp: reading.timestampRaw, id: reading.idVal, sn: reading.snVal });
+      // NEW: get the last saved timestamp for this terminal (from tank_level)
+      let lastSavedIso = null;
+      try {
+        lastSavedIso = await getLastSavedTimestamp(reading.idVal || terminalId);
+      } catch (e) {
+        // Log but do not fail the whole request
+        console.warn('Failed to fetch last saved timestamp:', e && e.message);
+      }
+      return res.json({ value: reading.rawValue, timestamp: lastSavedIso, id: reading.idVal, sn: reading.snVal });
     } catch (err) {
       if (err && err.status === 404) return res.status(404).json({ error: 'Device Offline' });
       return res.status(502).json({ error: 'Failed to fetch SOAP data', message: err && err.message });
