@@ -70,28 +70,46 @@ async function createLoginAttemptsTableIfNeeded() {
     console.warn('Failed to create login_attempts table:', err && err.message);
   }
 }
-// Get the last saved timestamp for a terminal from tank_level table
-async function getLastSavedTimestamp(terminalId) {
-  const client = await pool.connect();
+
+/* Ensure tank_sites table exists
+   Columns:
+     - terminal_id: optional link to a terminal id (text)
+     - site: textual site name
+     - location: textual field to store google map link (or any URL)
+     - latitude: numeric
+     - longitude: numeric
+*/
+async function createSitesTableIfNeeded() {
+  const createSql = `
+    CREATE TABLE IF NOT EXISTS tank_sites (
+      id SERIAL PRIMARY KEY,
+      terminal_id TEXT UNIQUE,
+      site TEXT,
+      location TEXT,
+      latitude DOUBLE PRECISION,
+      longitude DOUBLE PRECISION,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS tank_sites_terminal_idx ON tank_sites (terminal_id);
+  `;
   try {
-    const sql = `
-      SELECT "current_timestamp" AS saved_at
-      FROM tank_level
-      WHERE id = $1
-      ORDER BY "current_timestamp" DESC
-      LIMIT 1
-    `;
-    const r = await client.query(sql, [terminalId]);
-    if (!r.rows || r.rows.length === 0) return null;
-    return normalizeDbTimestampToIso(r.rows[0].saved_at);
-  } finally {
-    client.release();
+    const client = await pool.connect();
+    try {
+      await client.query(createSql);
+      console.log('Ensured tank_sites table exists');
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Failed to create tank_sites table:', err && err.message);
   }
 }
 
 
+
 // attempt to create the table on startup (non-blocking)
 createLoginAttemptsTableIfNeeded().catch(e => console.warn('Create table error', e && e.message));
+createSitesTableIfNeeded().catch(e => console.warn('Create sites table error', e && e.message));
 
 /* XML helpers */
 function nodeText(v) {
@@ -482,15 +500,7 @@ app.get('/api/tank', async (req, res) => {
 
     try {
       const reading = await getTankReading(terminalId);
-      // NEW: get the last saved timestamp for this terminal (from tank_level)
-      let lastSavedIso = null;
-      try {
-        lastSavedIso = await getLastSavedTimestamp(reading.idVal || terminalId);
-      } catch (e) {
-        // Log but do not fail the whole request
-        console.warn('Failed to fetch last saved timestamp:', e && e.message);
-      }
-      return res.json({ value: reading.rawValue, timestamp: lastSavedIso, id: reading.idVal, sn: reading.snVal });
+      return res.json({ value: reading.rawValue, timestamp: reading.timestampVal, id: reading.idVal, sn: reading.snVal });
     } catch (err) {
       if (err && err.status === 404) return res.status(404).json({ error: 'Device Offline' });
       return res.status(502).json({ error: 'Failed to fetch SOAP data', message: err && err.message });
@@ -579,6 +589,82 @@ app.post('/api/titles', express.json(), async (req, res) => {
   }
 });
 
+/* NEW: Sites endpoints
+   GET /api/sites -> returns { count, rows } where each row includes terminal_id, site, location, latitude, longitude
+   POST /api/sites -> upserts a site record by terminal_id
+*/
+
+app.get('/api/sites', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    try {
+      const q = `SELECT id, terminal_id, site, location, latitude, longitude, created_at FROM tank_sites ORDER BY created_at ASC`;
+      const r = await client.query(q);
+      const rows = (r.rows || []).map(row => ({
+        id: row.id,
+        terminal_id: row.terminal_id,
+        site: row.site,
+        location: row.location,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        created_at: normalizeDbTimestampToIso(row.created_at),
+      }));
+      res.json({ count: rows.length, rows });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/sites failed:', err && err.message);
+    res.status(500).json({ error: 'failed to fetch sites' });
+  }
+});
+
+app.post('/api/sites', express.json(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const terminalId = body.terminalId ? String(body.terminalId).trim() : null;
+    const site = body.site ? String(body.site).trim() : null;
+    const location = body.location ? String(body.location).trim() : null;
+    const latitude = (body.latitude !== undefined && body.latitude !== null && body.latitude !== '') ? Number(body.latitude) : null;
+    const longitude = (body.longitude !== undefined && body.longitude !== null && body.longitude !== '') ? Number(body.longitude) : null;
+
+    if (!terminalId) {
+      return res.status(400).json({ error: 'terminalId is required' });
+    }
+
+    const client = await pool.connect();
+    try {
+      const q = `
+        INSERT INTO tank_sites (terminal_id, site, location, latitude, longitude)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (terminal_id) DO UPDATE
+          SET site = EXCLUDED.site,
+              location = EXCLUDED.location,
+              latitude = EXCLUDED.latitude,
+              longitude = EXCLUDED.longitude
+        RETURNING id, terminal_id, site, location, latitude, longitude, created_at;
+      `;
+      const params = [terminalId, site, location, latitude, longitude];
+      const r = await client.query(q, params);
+      const row = r.rows && r.rows[0] ? r.rows[0] : null;
+      const out = row ? {
+        id: row.id,
+        terminal_id: row.terminal_id,
+        site: row.site,
+        location: row.location,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        created_at: normalizeDbTimestampToIso(row.created_at)
+      } : null;
+      return res.status(201).json(out);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('POST /api/sites failed:', err && err.message);
+    res.status(500).json({ error: 'failed to save site' });
+  }
+});
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString(), dbAvailable });

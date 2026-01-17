@@ -378,6 +378,11 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
 }
 .history-close:hover { transform: translateY(-2px); }
 
+.history-close[style*="background:transparent"] {
+  background: transparent;
+  color: var(--text);
+}
+
 /* footer */
 .footer{
   text-align:center;
@@ -660,4 +665,42 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
 }
 .tracking-table tr:nth-child(even) td {
   background: rgba(255,255,255,0.01);
+}
+
+/* -----------------------------
+   MAP modal/canvas styling
+   ----------------------------- */
+.map-canvas {
+  width: 100%;
+  height: 420px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #eaeaea; /* temporary while tiles load */
+}
+
+/* Small utility to ensure the "Open in Google Maps" link in modal looks okay */
+.history-controls .open-gmap-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.02);
+  color: var(--text);
+  text-decoration: none;
+  border: 1px solid rgba(255,255,255,0.03);
+}
+
+/* location row in card meta styling */
+.meta .location-row {
+  margin-top: 6px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  width:100%;
+}
+.meta .loc-link {
+  color:var(--accent);
+  text-decoration:underline;
+  font-weight:700;
 }

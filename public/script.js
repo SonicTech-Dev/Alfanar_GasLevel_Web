@@ -72,7 +72,31 @@ async function loadTitles() {
       device.title = map.get(String(device.id)) || device.title || device.name;
     });
   } catch (err) {
-    console.warn('Failed to load titles:', err.message);
+    console.warn('Failed to load titles:', err && err.message);
+  }
+
+  // Also try to load site location information (latitude/longitude and a google maps link)
+  try {
+    const resp = await fetch('/api/sites', { cache: 'no-store' });
+    if (resp.ok) {
+      const json = await resp.json();
+      if (Array.isArray(json.rows)) {
+        const siteMap = new Map(json.rows.map(r => [String(r.terminal_id), r]));
+        devices.forEach(device => {
+          const s = siteMap.get(String(device.id));
+          if (s) {
+            device.lat = (s.latitude === null || s.latitude === undefined) ? undefined : Number(s.latitude);
+            device.lng = (s.longitude === null || s.longitude === undefined) ? undefined : Number(s.longitude);
+            device.locationLink = s.location || '';
+            if (s.site) device.site = s.site;
+            // optionally override title/site name
+            if (!device.title && s.site) device.title = s.site;
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load sites:', err && err.message);
   }
 }
 
@@ -157,6 +181,27 @@ function setStatusColor(valueNum, valueEl, dotEl) {
   }
 }
 
+// Update card DOM to show location/link/coords (called after devices updated)
+function updateCardLocationDisplay(device) {
+  const card = document.querySelector(`.tank-card[data-terminal="${device.id}"]`);
+  if (!card) return;
+  const meta = card.querySelector('.meta');
+  if (!meta) return;
+
+  // remove existing location row if any
+  const existing = card.querySelector('.meta .location-row');
+  if (existing) existing.remove();
+
+  const div = document.createElement('div');
+  div.className = 'location-row';
+  const linkPart = device.locationLink ? `<a class="loc-link" href="${escapeHtml(device.locationLink)}" target="_blank" rel="noopener">Open map</a>` : '<span style="color:var(--muted)">No link</span>';
+  const coordsPart = (typeof device.lat === 'number' && typeof device.lng === 'number' && !isNaN(device.lat) && !isNaN(device.lng))
+    ? `<span class="loc-coords" style="margin-left:8px;color:var(--muted);font-size:13px">(${device.lat.toFixed(6)}, ${device.lng.toFixed(6)})</span>`
+    : '';
+  div.innerHTML = `<strong>Location:</strong> ${linkPart} ${coordsPart}`;
+  meta.appendChild(div);
+}
+
 // Create a card element for a device
 function createCard(device) {
   const card = document.createElement('article');
@@ -218,6 +263,14 @@ function createCard(device) {
           <path d="M17 14v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
+
+      <button class="map-btn" title="Map" aria-label="Show map" type="button">
+        <!-- simple pin icon -->
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2C8.686 2 6 4.686 6 8c0 4.5 6 12 6 12s6-7.5 6-12c0-3.314-2.686-6-6-6z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="12" cy="8" r="2.4" fill="currentColor"/>
+        </svg>
+      </button>
     </div>
   `.trim();
 
@@ -277,6 +330,9 @@ function createCard(device) {
       selectCard(card);
     }
   });
+
+  // After building card, append location display (if available)
+  setTimeout(() => updateCardLocationDisplay(device), 0);
 
   return card;
 }
@@ -409,6 +465,23 @@ function attachCardControls() {
         const tid = cardEl.dataset.terminal;
         const dev = devices.find(d => d.id === tid) || {};
         showHistoryModal(tid, dev.name);
+      });
+    }
+
+    // map button
+    const mapBtn = cardEl.querySelector('.map-btn');
+    if (mapBtn) {
+      mapBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const tid = cardEl.dataset.terminal;
+        const dev = devices.find(d => d.id === tid) || {};
+        // If the stored location link exists, open it directly (exact link as requested)
+        if (dev && dev.locationLink) {
+          // open the exact link in a new tab (user gesture)
+          try { window.open(dev.locationLink, '_blank', 'noopener'); } catch (e) { /* ignore */ }
+        }
+        // Show the modal that displays lat/lng and optional embedded map if coords available
+        showMapModal(tid, dev);
       });
     }
   });
@@ -1286,6 +1359,327 @@ function showVisitorTrackingModal() {
 }
 
 /* ---------------------------
+   MAP (Leaflet) integration (lightweight, lazy-loaded)
+   --------------------------- */
+
+/*
+  Approach:
+  - We lazy-load Leaflet's CSS/JS when needed.
+  - Clicking the Map button will open the exact 'location' link in a new tab (if present) and show a modal.
+  - The modal shows latitude/longitude and a small Leaflet preview map if lat/lng exist.
+*/
+
+function loadLeafletOnce() {
+  // returns a promise that resolves when L is available
+  if (window._leafletLoadingPromise) return window._leafletLoadingPromise;
+
+  window._leafletLoadingPromise = new Promise((resolve, reject) => {
+    // If Leaflet already present
+    if (window.L) return resolve(window.L);
+
+    // Inject CSS
+    const cssHref = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    if (!document.querySelector(`link[href="${cssHref}"]`)) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = cssHref;
+      link.crossOrigin = '';
+      document.head.appendChild(link);
+    }
+
+    // Inject script
+    const scriptSrc = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    if (document.querySelector(`script[src="${scriptSrc}"]`)) {
+      // Wait until L is available
+      const waitForL = () => {
+        if (window.L) return resolve(window.L);
+        setTimeout(waitForL, 50);
+      };
+      waitForL();
+      return;
+    }
+
+    const s = document.createElement('script');
+    s.src = scriptSrc;
+    s.async = true;
+    s.onload = () => {
+      if (window.L) resolve(window.L);
+      else reject(new Error('Leaflet loaded but L not found'));
+    };
+    s.onerror = (e) => reject(new Error('Failed to load Leaflet: ' + (e && e.message)));
+    document.body.appendChild(s);
+  });
+
+  return window._leafletLoadingPromise;
+}
+
+function showMapModal(terminalId, device) {
+  const modal = document.createElement('div');
+  modal.className = 'history-modal';
+  const title = escapeHtml(device.title || device.name || terminalId);
+  const canvasId = `map-canvas-${terminalId}-${Date.now()}`;
+
+  modal.innerHTML = `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="Location for ${title}">
+      <div class="history-actions">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong>${title}</strong>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="history-controls">
+            <a class="btn open-gmap-link" target="_blank" rel="noopener" style="display:none;">Open Location Link</a>
+            <button class="history-close" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+      <div style="position:relative;">
+        <div style="padding:8px 0;color:var(--muted);font-size:13px;">
+          <span id="map-latlng-${canvasId}"></span>
+        </div>
+        <div id="${canvasId}" class="map-canvas" aria-hidden="false"></div>
+      </div>
+      <div id="map-msg" class="history-msg"></div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  document.body.classList.add('modal-open');
+
+  const closeBtn = modal.querySelector('.history-close');
+  const msgEl = modal.querySelector('#map-msg');
+  const mapEl = modal.querySelector(`#${canvasId}`);
+  const openGmapLink = modal.querySelector('.open-gmap-link');
+  const latlngLabel = modal.querySelector(`#map-latlng-${canvasId}`);
+
+  let leafletMap = null;
+
+  function cleanup() {
+    if (leafletMap) {
+      try { leafletMap.remove(); } catch (e) { /* ignore */ }
+      leafletMap = null;
+    }
+    modal.remove();
+    document.body.classList.remove('modal-open');
+  }
+
+  closeBtn.addEventListener('click', () => cleanup());
+  modal.addEventListener('click', (e) => { if (e.target === modal) cleanup(); });
+
+  const lat = device && device.lat;
+  const lng = device && device.lng;
+
+  // If there's a location link, show button and set href
+  if (device && device.locationLink) {
+    openGmapLink.href = device.locationLink;
+    openGmapLink.style.display = 'inline-flex';
+    openGmapLink.textContent = 'Open Location Link';
+  }
+
+  // Show lat/lng if present
+  if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
+    latlngLabel.textContent = `Lat / Lng: ${lat.toFixed(6)} , ${lng.toFixed(6)}`;
+  } else {
+    latlngLabel.textContent = device && device.locationLink ? 'No numeric lat/lng available for this site.' : 'Location not available for this device.';
+  }
+
+  // If lat/lng present, display a small Leaflet preview map (lazy-load the library)
+  if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
+    msgEl.textContent = 'Loading map…';
+    loadLeafletOnce().then((L) => {
+      try {
+        leafletMap = L.map(mapEl, { attributionControl: true, zoomControl: true }).setView([lat, lng], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(leafletMap);
+
+        const popupContent = `
+          <div style="font-weight:700;margin-bottom:6px">${escapeHtml(device.title || device.name)}</div>
+          <div>Terminal ID: ${escapeHtml(terminalId)}</div>
+          <div style="margin-top:6px">Lat/Lng: ${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+        `;
+
+        const marker = L.marker([lat, lng]).addTo(leafletMap).bindPopup(popupContent).openPopup();
+
+        marker.on('click', () => {
+          const card = document.querySelector(`.tank-card[data-terminal="${terminalId}"]`);
+          if (card) {
+            selectCard(card);
+            try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { card.scrollIntoView(); }
+          }
+        });
+
+        msgEl.textContent = '';
+        setTimeout(() => { try { leafletMap.invalidateSize(); } catch (e) { /* ignore */ } }, 200);
+      } catch (err) {
+        msgEl.textContent = 'Map failed to initialize: ' + (err && err.message);
+      }
+    }).catch(err => {
+      msgEl.textContent = 'Failed to load map library: ' + (err && err.message);
+    });
+  } else {
+    // No lat/lng available; leave the canvas area empty and show helpful message
+    msgEl.textContent = device && device.locationLink ? 'Opened link in a new tab (if provided).' : 'No coordinates or location link available.';
+  }
+}
+
+// Show all devices (admin) in one map modal with simple markers
+async function showAllDevicesMap() {
+  // gather available coords
+  const coords = devices.map(d => ({ id: d.id, title: d.title || d.name, lat: d.lat, lng: d.lng })).filter(d => typeof d.lat === 'number' && typeof d.lng === 'number');
+  if (!coords.length) {
+    alert('No device coordinates available to show on the map.');
+    return;
+  }
+
+  const modal = document.createElement('div');
+  modal.className = 'history-modal';
+  const canvasId = `map-all-${Date.now()}`;
+  modal.innerHTML = `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="All devices">
+      <div class="history-actions">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong>All devices</strong>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="history-controls">
+            <button class="history-close" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+      <div style="position:relative;">
+        <div id="${canvasId}" class="map-canvas"></div>
+      </div>
+      <div id="map-all-msg" class="history-msg"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.body.classList.add('modal-open');
+
+  const closeBtn = modal.querySelector('.history-close');
+  const msgEl = modal.querySelector('#map-all-msg');
+  const mapEl = modal.querySelector(`#${canvasId}`);
+  let leafletMap = null;
+
+  function cleanup() {
+    if (leafletMap) {
+      try { leafletMap.remove(); } catch (e) { /* ignore */ }
+      leafletMap = null;
+    }
+    modal.remove();
+    document.body.classList.remove('modal-open');
+  }
+
+  closeBtn.addEventListener('click', () => cleanup());
+  modal.addEventListener('click', (e) => { if (e.target === modal) cleanup(); });
+
+  msgEl.textContent = 'Loading map…';
+  loadLeafletOnce().then((L) => {
+    try {
+      // center map at average
+      const avgLat = coords.reduce((s, r) => s + r.lat, 0) / coords.length;
+      const avgLng = coords.reduce((s, r) => s + r.lng, 0) / coords.length;
+      leafletMap = L.map(mapEl, { scrollWheelZoom: true }).setView([avgLat, avgLng], 12);
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(leafletMap);
+
+      const group = [];
+      coords.forEach(c => {
+        const marker = L.marker([c.lat, c.lng]).addTo(leafletMap);
+        marker.bindPopup(`<div style="font-weight:700">${escapeHtml(c.title)}</div><div>Terminal: ${escapeHtml(c.id)}</div>`);
+        marker.on('click', () => {
+          const card = document.querySelector(`.tank-card[data-terminal="${c.id}"]`);
+          if (card) {
+            selectCard(card);
+            try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { card.scrollIntoView(); }
+          }
+        });
+        group.push(marker);
+      });
+
+      const groupLayer = L.featureGroup(group);
+      try { leafletMap.fitBounds(groupLayer.getBounds().pad(0.12)); } catch (e) { /* ignore */ }
+
+      msgEl.textContent = '';
+      setTimeout(() => { try { leafletMap.invalidateSize(); } catch (e) { /* ignore */ } }, 200);
+    } catch (err) {
+      msgEl.textContent = 'Map failed to initialize: ' + (err && err.message);
+    }
+  }).catch(err => {
+    msgEl.textContent = 'Failed to load map library: ' + (err && err.message);
+  });
+}
+
+/* ---------------------------
+   Sites (client-side helpers + admin UI)
+   --------------------------- */
+
+// Helper to POST a site (used by admin UI). Minimal validation.
+async function saveSite({ terminalId, site, location, latitude, longitude }) {
+  const body = { terminalId, site, location };
+  if (latitude !== undefined && latitude !== null && latitude !== '') body.latitude = Number(latitude);
+  if (longitude !== undefined && longitude !== null && longitude !== '') body.longitude = Number(longitude);
+  const resp = await fetch('/api/sites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    const j = await resp.json().catch(() => ({}));
+    throw new Error(j.error || 'Failed to save site');
+  }
+  return resp.json();
+}
+
+// Refresh devices' site info from server and update cards/dropdown
+async function refreshSitesAndUpdateUI() {
+  try {
+    const resp = await fetch('/api/sites', { cache: 'no-store' });
+    if (!resp.ok) return;
+    const json = await resp.json();
+    const rows = Array.isArray(json.rows) ? json.rows : [];
+    const siteMap = new Map(rows.map(r => [String(r.terminal_id), r]));
+
+    // update devices in memory
+    devices.forEach(d => {
+      const s = siteMap.get(String(d.id));
+      if (s) {
+        d.lat = (s.latitude === null || s.latitude === undefined) ? undefined : Number(s.latitude);
+        d.lng = (s.longitude === null || s.longitude === undefined) ? undefined : Number(s.longitude);
+        d.locationLink = s.location || '';
+        d.site = s.site || d.site;
+      } else {
+        // keep existing if none found
+      }
+    });
+
+    // update card displays for location
+    devices.forEach(d => updateCardLocationDisplay(d));
+
+    // update admin-device-select dropdown if present
+    const sel = document.getElementById('admin-device-select');
+    if (sel) {
+      // Clear and rebuild options
+      const val = sel.value;
+      sel.innerHTML = `<option value="">— choose device (optional) —</option>`;
+      devices.forEach(dev => {
+        const opt = document.createElement('option');
+        opt.value = dev.id;
+        opt.textContent = `${dev.name} (${dev.id})`;
+        sel.appendChild(opt);
+      });
+      // attempt to restore previous selection if still valid
+      if (val) sel.value = val;
+    }
+  } catch (err) {
+    console.warn('Failed to refresh sites:', err && err.message);
+  }
+}
+
+/* ---------------------------
    Init
    --------------------------- */
 
@@ -1302,10 +1696,10 @@ async function init() {
   if (!tanksContainer) return;
 
   try {
-    // Load titles from backend first so inputs show correct values on initial render
+    // Load titles and sites from backend first so inputs show correct values on initial render
     await loadTitles();
   } catch (e) {
-    console.warn('Title load failed during init', e && e.message);
+    console.warn('Title/site load failed during init', e && e.message);
   }
 
   // Restore any saved order
@@ -1346,6 +1740,89 @@ async function init() {
           showVisitorTrackingModal();
         });
       }
+
+      // Attach "Show All Devices Map" handler
+      const allMapBtn = document.getElementById('open-all-map');
+      if (allMapBtn) {
+        allMapBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          showAllDevicesMap();
+        });
+      }
+
+      // Populate admin device dropdown and wire up save button
+      const deviceSelect = document.getElementById('admin-device-select');
+      if (deviceSelect) {
+        deviceSelect.innerHTML = `<option value="">— choose device (optional) —</option>`;
+        devices.forEach(dev => {
+          const opt = document.createElement('option');
+          opt.value = dev.id;
+          opt.textContent = `${dev.name} (${dev.id})`;
+          deviceSelect.appendChild(opt);
+        });
+
+        deviceSelect.addEventListener('change', (ev) => {
+          const v = ev.target.value;
+          const tidInput = document.getElementById('admin-terminal-id');
+          if (v && tidInput) tidInput.value = v;
+        });
+      }
+
+      const saveBtn = document.getElementById('admin-site-save');
+      const msgSpan = document.getElementById('admin-site-msg');
+      if (saveBtn) {
+        saveBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const sel = document.getElementById('admin-device-select');
+          const terminalInput = document.getElementById('admin-terminal-id');
+          const siteInput = document.getElementById('admin-site-name');
+          const locInput = document.getElementById('admin-location-link');
+          const latInput = document.getElementById('admin-lat');
+          const lngInput = document.getElementById('admin-lng');
+
+          // Prefer explicit terminal id, else selection
+          const chosenId = (terminalInput && terminalInput.value) ? String(terminalInput.value).trim() : (sel && sel.value ? sel.value : '');
+          if (!chosenId) {
+            msgSpan.textContent = 'Terminal ID required (enter or pick a device).';
+            msgSpan.style.color = '#ffdede';
+            return;
+          }
+
+          const payload = {
+            terminalId: chosenId,
+            site: siteInput && siteInput.value ? siteInput.value.trim() : '',
+            location: locInput && locInput.value ? locInput.value.trim() : '',
+            latitude: latInput && latInput.value ? latInput.value.trim() : '',
+            longitude: lngInput && lngInput.value ? lngInput.value.trim() : ''
+          };
+
+          msgSpan.textContent = 'Saving…';
+          msgSpan.style.color = 'var(--muted)';
+          try {
+            const res = await saveSite(payload);
+            // update in-memory device entry if present
+            const dev = devices.find(d => String(d.id) === String(res.terminal_id));
+            if (dev) {
+              dev.lat = (res.latitude !== null && res.latitude !== undefined) ? Number(res.latitude) : undefined;
+              dev.lng = (res.longitude !== null && res.longitude !== undefined) ? Number(res.longitude) : undefined;
+              dev.locationLink = res.location || '';
+              dev.site = res.site || dev.site;
+              // update card UI
+              updateCardLocationDisplay(dev);
+            }
+            // refresh site list & dropdowns
+            await refreshSitesAndUpdateUI();
+            msgSpan.textContent = 'Saved';
+            msgSpan.style.color = '#22c55e';
+            setTimeout(() => { msgSpan.textContent = ''; }, 2200);
+          } catch (err) {
+            console.warn('Save site failed', err && err.message);
+            msgSpan.textContent = 'Save failed: ' + (err && err.message);
+            msgSpan.style.color = '#ffdede';
+          }
+        });
+      }
     } else if (adminMenu) {
       adminMenu.style.display = 'none';
       adminMenu.setAttribute('aria-hidden', 'true');
@@ -1353,6 +1830,9 @@ async function init() {
   } catch (e) {
     console.warn('Failed to set admin menu visibility', e && e.message);
   }
+
+  // Ensure location displays are accurate (in case loaded after card creation)
+  devices.forEach(d => updateCardLocationDisplay(d));
 
   // Polling: subsequent refreshes will NOT show the spinner (silent updates)
   setInterval(refreshAll, POLL_INTERVAL_MS);

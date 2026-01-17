@@ -81,15 +81,48 @@
 
     <div id="global-error" class="error" style="display:none;"></div>
 
-    <!-- ADMIN MENU (hidden by default) -->
+    <!-- ADMIN MENU (hidden by default). This includes the form to add/update site locations. -->
     <aside id="admin-menu" class="admin-menu" role="region" aria-hidden="true" style="display:none;">
       <div class="admin-menu-inner">
         <h2>Administrator Menu.</h2>
+
         <!-- Visitor Tracking button -->
         <div>
           <button id="visitor-tracking-btn" class="btn" type="button">Visitor Tracking</button>
         </div>
-        <!-- Empty large menu area for future admin features -->
+
+        <!-- Show All Devices Map -->
+        <div style="margin-top:8px;">
+          <button id="open-all-map" class="btn" type="button">Show All Devices Map</button>
+        </div>
+
+        <!-- Manage Site / Location form (visible to admins) -->
+        <div style="margin-top:14px;">
+          <strong style="display:block;margin-bottom:8px;color:var(--muted)">Manage Site / Location</strong>
+
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <select id="admin-device-select" class="graph-title-input" aria-label="Choose device (optional)">
+              <option value="">— choose device (optional) —</option>
+            </select>
+
+            <input id="admin-terminal-id" class="graph-title-input" placeholder="Terminal ID (or leave blank and pick device)" />
+            <input id="admin-site-name" class="graph-title-input" placeholder="Site name (optional)" />
+            <input id="admin-location-link" class="graph-title-input" placeholder="Location link (Google Maps URL)" />
+            <div style="display:flex;gap:8px;">
+              <input id="admin-lat" class="graph-title-input" placeholder="Latitude" />
+              <input id="admin-lng" class="graph-title-input" placeholder="Longitude" />
+            </div>
+
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button id="admin-site-save" class="btn" type="button">Save Site</button>
+              <span id="admin-site-msg" style="color:var(--muted);font-size:13px;"></span>
+            </div>
+
+            <div style="color:var(--muted);font-size:12px;">
+              You can provide Terminal ID directly or pick the device from the dropdown to populate it.
+            </div>
+          </div>
+        </div>
       </div>
     </aside>
   </main>
@@ -118,8 +151,8 @@
       Password: GasLevel_Alfanar1
 
     - ADMIN credentials (client-only example; change to what you want):
-      ADMIN_USERNAME: Admin_Gas
-      ADMIN_PASSWORD: Admin_Gas_1
+      ADMIN_USERNAME: Sonic
+      ADMIN_PASSWORD: Sonic@123
 
     Behavior:
     - Shows modal overlay when the site loads every time (no persistence).
