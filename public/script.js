@@ -5,7 +5,7 @@ let devices = [
   { id: "230348", name: "Transmitter C — ZN000000103596" },
   { id: "230345", name: "Transmitter D — ZN000000104344" },
   { id: "230346", name: "Transmitter E — ZN000000104482" },
-  { id: "231544", name: "Transmitter F — ZN000000104512" }
+  { id: "231927", name: "Transmitter F — ZN000000096233" }
 ];
 
 // Poll interval in milliseconds
@@ -182,24 +182,17 @@ function setStatusColor(valueNum, valueEl, dotEl) {
 }
 
 // Update card DOM to show location/link/coords (called after devices updated)
+// NOTE: intentionally disabled — we remove the visual "Location:" row from each card.
 function updateCardLocationDisplay(device) {
-  const card = document.querySelector(`.tank-card[data-terminal="${device.id}"]`);
-  if (!card) return;
-  const meta = card.querySelector('.meta');
-  if (!meta) return;
-
-  // remove existing location row if any
-  const existing = card.querySelector('.meta .location-row');
-  if (existing) existing.remove();
-
-  const div = document.createElement('div');
-  div.className = 'location-row';
-  const linkPart = device.locationLink ? `<a class="loc-link" href="${escapeHtml(device.locationLink)}" target="_blank" rel="noopener">Open map</a>` : '<span style="color:var(--muted)">No link</span>';
-  const coordsPart = (typeof device.lat === 'number' && typeof device.lng === 'number' && !isNaN(device.lat) && !isNaN(device.lng))
-    ? `<span class="loc-coords" style="margin-left:8px;color:var(--muted);font-size:13px">(${device.lat.toFixed(6)}, ${device.lng.toFixed(6)})</span>`
-    : '';
-  div.innerHTML = `<strong>Location:</strong> ${linkPart} ${coordsPart}`;
-  meta.appendChild(div);
+  // Remove any existing location-row so it's never displayed.
+  try {
+    const card = document.querySelector(`.tank-card[data-terminal="${device.id}"]`);
+    if (!card) return;
+    const existing = card.querySelector('.meta .location-row');
+    if (existing) existing.remove();
+  } catch (e) {
+    // ignore errors; this function is intentionally minimal
+  }
 }
 
 // Create a card element for a device
@@ -232,10 +225,10 @@ function createCard(device) {
         </div>
       </div>
     </div>
-
     <div class="meta">
-      <div><strong>Terminal ID:</strong> <span class="term">${escapeHtml(device.id)}</span></div>
+      <div class="term-row admin-only" style="display:none;"><strong>Terminal ID:</strong> <span class="term">${escapeHtml(device.id)}</span></div>
       <div><strong>Timestamp:</strong> <span class="time">-</span></div>
+    </div>
     </div>
 
     <div class="card-footer">
@@ -467,20 +460,14 @@ function attachCardControls() {
         showHistoryModal(tid, dev.name);
       });
     }
-
-    // map button
+    // map button — ONLY open the interactive modal (do not auto-open external map link)
     const mapBtn = cardEl.querySelector('.map-btn');
     if (mapBtn) {
       mapBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const tid = cardEl.dataset.terminal;
         const dev = devices.find(d => d.id === tid) || {};
-        // If the stored location link exists, open it directly (exact link as requested)
-        if (dev && dev.locationLink) {
-          // open the exact link in a new tab (user gesture)
-          try { window.open(dev.locationLink, '_blank', 'noopener'); } catch (e) { /* ignore */ }
-        }
-        // Show the modal that displays lat/lng and optional embedded map if coords available
+        // Do NOT auto-open external location link. Only show the interactive modal.
         showMapModal(tid, dev);
       });
     }
@@ -1190,17 +1177,16 @@ function showHistoryModal(terminalId, terminalName) {
 
     return _activeChart;
   }
-
-  // On open: prefill start/end to "last hour" (NOW and NOW - 1 hour), then auto-load that range.
+  // On open: prefill start/end to "last 48 hours" (NOW and NOW - 48 hours), then auto-load that range.
   try {
     const nowMs = Date.now();
-    const oneHourAgoMs = nowMs - 60 * 60 * 1000;
+    const fortyEightHoursAgoMs = nowMs - (48 * 60 * 60 * 1000);
     if (startInput && endInput) {
-      startInput.value = toDatetimeLocalValue(oneHourAgoMs);
+      startInput.value = toDatetimeLocalValue(fortyEightHoursAgoMs);
       endInput.value = toDatetimeLocalValue(nowMs);
     }
-    // Immediately load last hour
-    loadRange({ startMs: oneHourAgoMs, endMs: nowMs });
+    // Immediately load last 48 hours
+    loadRange({ startMs: fortyEightHoursAgoMs, endMs: nowMs });
   } catch (e) {
     // fallback: load default last 500 rows
     loadRange({ limit: 500 });
@@ -1683,7 +1669,7 @@ async function refreshSitesAndUpdateUI() {
    Init
    --------------------------- */
 
-// Single, unified init that loads titles BEFORE building cards
+ // Single, unified init that loads titles BEFORE building cards
 async function init() {
   // prevent starting if not authenticated (for this page load)
   if (!isLoggedIn()) {
@@ -1728,9 +1714,12 @@ async function init() {
   // If logged in as admin, reveal the Administrator Menu area
   try {
     const adminMenu = document.getElementById('admin-menu');
-    if (isAdmin() && adminMenu) {
+      if (isAdmin() && adminMenu) {
       adminMenu.style.display = 'block';
       adminMenu.setAttribute('aria-hidden', 'false');
+
+      // Reveal Terminal ID rows for admins
+      document.querySelectorAll('.term-row.admin-only').forEach(el => { el.style.display = ''; });
 
       // Attach visitor tracking button handler
       const vtBtn = document.getElementById('visitor-tracking-btn');
@@ -1823,14 +1812,41 @@ async function init() {
           }
         });
       }
-    } else if (adminMenu) {
+         } else if (adminMenu) {
       adminMenu.style.display = 'none';
       adminMenu.setAttribute('aria-hidden', 'true');
+
+      // Ensure Terminal ID rows are hidden for non-admins
+      document.querySelectorAll('.term-row.admin-only').forEach(el => { el.style.display = 'none'; });
     }
   } catch (e) {
     console.warn('Failed to set admin menu visibility', e && e.message);
   }
+  // Show simple User Menu for non-admin authenticated users
+  try {
+    const userMenu = document.getElementById('user-menu');
+    if (userMenu) {
+      if (!isAdmin()) {
+        // show for normal authenticated users
+        userMenu.style.display = 'block';
+        userMenu.setAttribute('aria-hidden', 'false');
 
+        const userMapBtn = document.getElementById('user-open-all-map');
+        if (userMapBtn) {
+          // ensure only one handler attached
+          userMapBtn.removeEventListener('click', userMapBtn._boundHandler);
+          userMapBtn._boundHandler = (e) => { e.stopPropagation(); showAllDevicesMap(); };
+          userMapBtn.addEventListener('click', userMapBtn._boundHandler);
+        }
+      } else {
+        // hide for admins (they already have the admin menu)
+        userMenu.style.display = 'none';
+        userMenu.setAttribute('aria-hidden', 'true');
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to set user menu visibility', e && e.message);
+  }
   // Ensure location displays are accurate (in case loaded after card creation)
   devices.forEach(d => updateCardLocationDisplay(d));
 
