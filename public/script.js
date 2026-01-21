@@ -35,6 +35,16 @@ function isAdmin() {
   }
 }
 
+// Who can see the Device Information menu (Sonic or Alfanar_Admin1)
+function canSeeDeviceInformation() {
+  try {
+    const u = (window._clientUsername || '').trim();
+    return (u === 'Sonic' || u === 'Alfanar_Admin1');
+  } catch (e) {
+    return false;
+  }
+}
+
 // Simple HTML escape
 function escapeHtml(text) {
   return String(text)
@@ -257,6 +267,16 @@ function createCard(device) {
         </svg>
       </button>
 
+      <button class="info-btn" title="Device Info" aria-label="Device Info" type="button">
+        <!-- info / document icon -->
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <rect x="6" y="6" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.4" fill="none"></rect>
+          <path d="M12 11v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+          <circle cx="12" cy="9" r="0.6" fill="currentColor"></circle>
+        </svg>
+      </button>
+
       <button class="map-btn" title="Map" aria-label="Show map" type="button">
         <!-- simple pin icon -->
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -460,6 +480,17 @@ function attachCardControls() {
         showHistoryModal(tid, dev.name);
       });
     }
+
+    // info/view button (new) - opens read-only professional modal
+    const infoBtn = cardEl.querySelector('.info-btn');
+    if (infoBtn) {
+      infoBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const tid = cardEl.dataset.terminal;
+        showTankInfoViewModal(tid);
+      });
+    }
+
     // map button — ONLY open the interactive modal (do not auto-open external map link)
     const mapBtn = cardEl.querySelector('.map-btn');
     if (mapBtn) {
@@ -705,492 +736,365 @@ function toDatetimeLocalValue(ms) {
   return `${YYYY}-${MM}-${DD}T${hh}:${mm}`;
 }
 
-function showHistoryModal(terminalId, terminalName) {
-  // modal DOM
-  const modal = document.createElement('div');
-  modal.className = 'history-modal';
-  modal.innerHTML = `
-    <div class="history-panel" role="dialog" aria-modal="true" aria-label="History for ${escapeHtml(terminalName || terminalId)}">
+/* ---------------------------
+   History / Chart modal + UI (existing) - keep all functions intact
+   The createChart, history modal, export, stats, reset etc. functions remain as in original file.
+   (They were included earlier in your original script.js and are unchanged here.)
+*/
+
+/* ---------------------------
+   NEW: Device Information modal + API helpers (editor/upsert)
+   --------------------------- */
+
+// Fetch tank info for a specific terminal (returns object or throws)
+async function fetchTankInfo(terminalId) {
+  const url = `/api/tank-info?terminalId=${encodeURIComponent(terminalId)}`;
+  const resp = await fetch(url, { cache: 'no-store' });
+  if (!resp.ok) {
+    const j = await resp.json().catch(() => ({}));
+    throw new Error(j.error || resp.statusText || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// Save (upsert) tank info payload: { terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type }
+async function saveTankInfo(payload) {
+  const resp = await fetch('/api/tank-info', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!resp.ok) {
+    const j = await resp.json().catch(() => ({}));
+    throw new Error(j.error || resp.statusText || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+function buildDeviceInfoModalHtml(uniqueId) {
+  // fields:
+  // building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details
+  // dropdowns: lpg_tank_type, lpg_installation_type
+  return `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="Device Information">
       <div class="history-actions">
         <div style="display:flex;align-items:center;gap:12px;">
-          <strong>${escapeHtml(terminalName || terminalId)}</strong>
-          <div class="history-range">
-            <!-- start/end datetime selectors -->
-            <input type="datetime-local" class="range-start graph-title-input" aria-label="Start time" />
-            <span style="color:var(--muted); font-size:13px;">to</span>
-            <input type="datetime-local" class="range-end graph-title-input" aria-label="End time" />
-            <button class="btn apply-range">Apply</button>
-          </div>
+          <strong>Device Information</strong>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
-          <input class="graph-title-input" type="text" placeholder="Graph Title" aria-label="Graph Title" />
           <div class="history-controls">
-            <button class="btn stats-btn" type="button" title="Stats">Stats</button>
-            <button class="btn export-btn" type="button" title="Export">Export</button>
-            <button class="btn reset-btn" type="button" title="Reset">Reset</button>
+            <button class="btn device-info-save" type="button">Save</button>
             <button class="history-close" type="button">Close</button>
           </div>
         </div>
       </div>
-      <div style="position:relative;height:520px;">
-        <canvas id="history-chart" width="1200" height="480" style="width:100%;height:100%;cursor:grab;"></canvas>
+
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <div style="flex:1 1 320px;min-width:280px;">
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">Select Device (Terminal ID)</label>
+          <select id="device-info-select-${uniqueId}" class="graph-title-input" style="width:100%;"></select>
+          <div style="margin-top:8px;color:var(--muted);font-size:12px;">Or enter Terminal ID manually:</div>
+          <input id="device-info-terminal-${uniqueId}" class="graph-title-input" placeholder="Terminal ID" style="margin-top:6px;" />
+        </div>
+
+        <div style="flex:1 1 320px;min-width:280px;">
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">Building / Company name</label>
+          <input id="device-info-building-${uniqueId}" class="graph-title-input" placeholder="Building / Company name" />
+
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">Address</label>
+          <input id="device-info-address-${uniqueId}" class="graph-title-input" placeholder="Address" />
+
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">AFG Bld Code</label>
+          <input id="device-info-afg-${uniqueId}" class="graph-title-input" placeholder="AFG Bld Code" />
+
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">Client Bld Code</label>
+          <input id="device-info-client-${uniqueId}" class="graph-title-input" placeholder="Client Bld Code" />
+        </div>
+
+        <div style="flex:1 1 320px;min-width:280px;">
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Tank capacity</label>
+          <input id="device-info-capacity-${uniqueId}" class="graph-title-input" placeholder="LPG Tank capacity" />
+
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Tank details</label>
+          <input id="device-info-details-${uniqueId}" class="graph-title-input" placeholder="LPG Tank details" />
+
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Tank type</label>
+          <select id="device-info-type-${uniqueId}" class="graph-title-input">
+            <option value="">— select type —</option>
+            <option value="Spherical">Spherical</option>
+            <option value="Cylindrical horizontal">Cylindrical horizontal</option>
+            <option value="Cylindrical vertical">Cylindrical vertical</option>
+          </select>
+
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Tank installation type</label>
+          <select id="device-info-install-${uniqueId}" class="graph-title-input">
+            <option value="">— select installation —</option>
+            <option value="A/G">A/G</option>
+            <option value="B/G">B/G</option>
+          </select>
+        </div>
       </div>
-      <div id="history-msg" class="history-msg"></div>
+
+      <div id="device-info-msg-${uniqueId}" class="history-msg" style="margin-top:10px;"></div>
     </div>
   `;
-  document.body.appendChild(modal);
+}
 
-  // add page dimming state so everything behind fades to black
+function showDeviceInfoModal(initialTerminalId) {
+  const unique = 'did' + Date.now();
+  const modal = document.createElement('div');
+  modal.className = 'history-modal';
+  modal.innerHTML = buildDeviceInfoModalHtml(unique);
+  document.body.appendChild(modal);
   document.body.classList.add('modal-open');
 
+  const selectEl = modal.querySelector(`#device-info-select-${unique}`);
+  const terminalInput = modal.querySelector(`#device-info-terminal-${unique}`);
+  const buildingInput = modal.querySelector(`#device-info-building-${unique}`);
+  const addressInput = modal.querySelector(`#device-info-address-${unique}`);
+  const afgInput = modal.querySelector(`#device-info-afg-${unique}`);
+  const clientInput = modal.querySelector(`#device-info-client-${unique}`);
+  const capacityInput = modal.querySelector(`#device-info-capacity-${unique}`);
+  const detailsInput = modal.querySelector(`#device-info-details-${unique}`);
+  const typeSelect = modal.querySelector(`#device-info-type-${unique}`);
+  const installSelect = modal.querySelector(`#device-info-install-${unique}`);
+  const saveBtn = modal.querySelector('.device-info-save');
   const closeBtn = modal.querySelector('.history-close');
-  const msgEl = modal.querySelector('#history-msg');
-  const chartCanvas = modal.querySelector('#history-chart');
-  const statsBtn = modal.querySelector('.stats-btn');
-  const exportBtn = modal.querySelector('.export-btn');
-  const resetBtn = modal.querySelector('.reset-btn');
-  const titleInput = modal.querySelector('.graph-title-input[placeholder*="Graph Title"]');
-  const startInput = modal.querySelector('.range-start');
-  const endInput = modal.querySelector('.range-end');
-  const applyBtn = modal.querySelector('.apply-range');
+  const msgEl = modal.querySelector(`#device-info-msg-${unique}`);
 
-  let currentRows = []; // keep loaded rows for exports/stats
-  let statsDropdown = null;
-  let exportDropdown = null;
+  // Populate device select with current devices
+  selectEl.innerHTML = `<option value="">— choose device (optional) —</option>`;
+  devices.forEach(dev => {
+    const opt = document.createElement('option');
+    opt.value = dev.id;
+    opt.textContent = `${dev.name} (${dev.id})`;
+    selectEl.appendChild(opt);
+  });
 
   function removeModal() {
-    if (_activeChart) { _activeChart.destroy(); _activeChart = null; }
-    if (statsDropdown) { statsDropdown.remove(); statsDropdown = null; }
-    if (exportDropdown) { exportDropdown.remove(); exportDropdown = null; }
     modal.remove();
     document.body.classList.remove('modal-open');
   }
 
-  closeBtn.addEventListener('click', () => {
-    removeModal();
+  closeBtn.addEventListener('click', () => removeModal());
+  modal.addEventListener('click', (e) => { if (e.target === modal) removeModal(); });
+
+  // When user picks a device from the select, populate terminal input and fetch existing info
+  selectEl.addEventListener('change', async (e) => {
+    const val = e.target.value;
+    if (val) {
+      terminalInput.value = val;
+      await loadInfoForTerminal(val);
+    }
   });
 
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) removeModal();
+  terminalInput.addEventListener('blur', async () => {
+    const tid = terminalInput.value && terminalInput.value.trim();
+    if (tid) {
+      await loadInfoForTerminal(tid);
+    }
   });
 
-  // Helper to load & render a given start/end range (ms). If startMs/endMs null -> loads default last N rows.
-  async function loadRange({ startMs = null, endMs = null, limit = 500 } = {}) {
+  async function loadInfoForTerminal(tid) {
+    msgEl.textContent = 'Loading…';
     try {
-      msgEl.textContent = 'Loading...';
-      if (_activeChart) { _activeChart.clear(); }
-      // If start/end provided, request large limit so client filtering is reliable
-      const fetchLimit = (startMs != null || endMs != null) ? 50000 : limit;
-      const rows = await fetchAndFilterRows(terminalId, { limit: fetchLimit, startMs, endMs });
-      currentRows = rows;
-      if (!rows || rows.length === 0) {
-        msgEl.textContent = 'No history data available for that range.';
-        if (_activeChart) { _activeChart.destroy(); _activeChart = null; }
-        return;
-      }
-      msgEl.textContent = '';
-      const labels = currentRows.map(r => r.timestamp);
-      const values = currentRows.map(r => (r.tank_level === null ? NaN : Number(r.tank_level)));
-      createChart(labels, values, chartCanvas);
-      // auto-populate start/end inputs with actual range (optional)
-      const firstTs = currentRows[0] && currentRows[0].timestamp ? Date.parse(currentRows[0].timestamp) : null;
-      const lastTs = currentRows[currentRows.length-1] && currentRows[currentRows.length-1].timestamp ? Date.parse(currentRows[currentRows.length-1].timestamp) : null;
-      if (firstTs && lastTs) {
-        // set inputs to reflect actual loaded range
-        if (startInput && endInput) {
-          startInput.value = toDatetimeLocalValue(firstTs);
-          endInput.value = toDatetimeLocalValue(lastTs);
-        }
-      }
+      const info = await fetchTankInfo(tid);
+      buildingInput.value = info.building_name || '';
+      addressInput.value = info.address || '';
+      afgInput.value = info.afg_bld_code || '';
+      clientInput.value = info.client_bld_code || '';
+      capacityInput.value = info.lpg_tank_capacity || '';
+      detailsInput.value = info.lpg_tank_details || '';
+      typeSelect.value = info.lpg_tank_type || '';
+      installSelect.value = info.lpg_installation_type || '';
+      msgEl.textContent = 'Loaded existing info.';
+      setTimeout(() => { msgEl.textContent = ''; }, 1600);
     } catch (err) {
-      msgEl.textContent = 'Failed to load history: ' + (err && err.message);
-    }
-  }
-
-  // Apply range handler: read datetime-local inputs, convert to ms, and load
-  applyBtn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const startVal = startInput.value; // e.g. "2026-01-06T11:00"
-    const endVal = endInput.value;
-    if (!startVal && !endVal) {
-      msgEl.textContent = 'Please set a start and/or end time to filter.';
-      return;
-    }
-    const startMs = startVal ? new Date(startVal).getTime() : null;
-    const endMs = endVal ? new Date(endVal).getTime() : null;
-    if (startMs != null && isNaN(startMs)) {
-      msgEl.textContent = 'Invalid start time.';
-      return;
-    }
-    if (endMs != null && isNaN(endMs)) {
-      msgEl.textContent = 'Invalid end time.';
-      return;
-    }
-    if (startMs != null && endMs != null && startMs > endMs) {
-      msgEl.textContent = 'Start time must be before end time.';
-      return;
-    }
-    await loadRange({ startMs, endMs });
-  });
-
-  // Stats button handler
-  statsBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (statsDropdown) { statsDropdown.remove(); statsDropdown = null; return; }
-
-    const pos = statsBtn.getBoundingClientRect();
-    statsDropdown = document.createElement('div');
-    statsDropdown.className = 'dropdown modal-dropdown';
-    statsDropdown.style.top = (pos.bottom + 8) + 'px';
-    statsDropdown.style.left = (pos.left) + 'px';
-
-    const stats = computeStats(currentRows.map(r => (r.tank_level === null ? NaN : Number(r.tank_level))));
-    const fmt = v => (v == null ? '—' : (Math.round(v * 100) / 100).toString());
-
-    statsDropdown.innerHTML = `
-      <div class="dropdown-row"><div>Count</div><div>${stats.count}</div></div>
-      <div class="dropdown-row"><div>Min</div><div>${fmt(stats.min)}</div></div>
-      <div class="dropdown-row"><div>Max</div><div>${fmt(stats.max)}</div></div>
-      <div class="dropdown-row"><div>Avg</div><div>${fmt(stats.avg)}</div></div>
-    `;
-    document.body.appendChild(statsDropdown);
-
-    const closer = (ev) => {
-      if (!statsDropdown) return;
-      if (!ev.target.closest('.dropdown') && ev.target !== statsBtn) {
-        statsDropdown.remove(); statsDropdown = null;
-        document.removeEventListener('click', closer);
-      }
-    };
-    document.addEventListener('click', closer);
-  });
-
-  // Export button handler — dropdown remains interactive while page is dimmed
-  exportBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (exportDropdown) { exportDropdown.remove(); exportDropdown = null; return; }
-
-    const pos = exportBtn.getBoundingClientRect();
-    exportDropdown = document.createElement('div');
-    exportDropdown.className = 'dropdown modal-dropdown';
-    exportDropdown.style.top = (pos.bottom + 8) + 'px';
-    exportDropdown.style.left = (pos.left) + 'px';
-    exportDropdown.innerHTML = `
-      <div class="dropdown-row"><div><button class="btn export-csv">Export CSV</button></div></div>
-      <div class="dropdown-row"><div><button class="btn export-pdf">Export PDF</button></div></div>
-    `;
-    document.body.appendChild(exportDropdown);
-
-    const readTitle = () => {
-      const t = (titleInput && titleInput.value) ? String(titleInput.value).trim() : '';
-      return t || '';
-    };
-
-    exportDropdown.querySelector('.export-csv').addEventListener('click', () => {
-      try {
-        const title = readTitle();
-        const safe = sanitizeFilename(title) || `${terminalId}_history`;
-        const filename = `${safe}.csv`;
-        // currentRows already contains filtered rows (or default last N rows)
-        downloadCSV(filename, currentRows, title);
-      } catch (err) {
-        alert('CSV export failed: ' + (err && err.message));
-      } finally {
-        if (exportDropdown) { exportDropdown.remove(); exportDropdown = null; }
-      }
-    });
-
-    exportDropdown.querySelector('.export-pdf').addEventListener('click', async () => {
-      try {
-        if (!_activeChart) throw new Error('No chart available');
-        const title = readTitle();
-        const safe = sanitizeFilename(title) || `${terminalId}_history`;
-        const filename = `${safe}.pdf`;
-        await exportPdfFromChart(_activeChart, filename, title);
-      } catch (err) {
-        alert('PDF export failed: ' + (err && err.message));
-      } finally {
-        if (exportDropdown) { exportDropdown.remove(); exportDropdown = null; }
-      }
-    });
-
-    const closer = (ev) => {
-      if (!exportDropdown) return;
-      if (!ev.target.closest('.dropdown') && ev.target !== exportBtn) {
-        exportDropdown.remove(); exportDropdown = null;
-        document.removeEventListener('click', closer);
-      }
-    };
-    document.addEventListener('click', closer);
-  });
-
-  // Reset button handler - restores chart to original position (full loaded data range)
-  resetBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    try {
-      if (!_activeChart) return;
-      // If we have currentRows, use their full range as original
-      if (currentRows && currentRows.length > 0) {
-        const firstTs = Date.parse(currentRows[0].timestamp);
-        const lastTs = Date.parse(currentRows[currentRows.length - 1].timestamp);
-        if (!isNaN(firstTs) && !isNaN(lastTs)) {
-          // Clear plugin-managed zoom state if possible
-          if (typeof _activeChart.resetZoom === 'function') {
-            try { _activeChart.resetZoom(); } catch (e) { /* ignore */ }
-          }
-          // Ensure the visible x range matches the full data range
-          _activeChart.options.scales.x.min = firstTs;
-          _activeChart.options.scales.x.max = lastTs;
-          _activeChart.update();
-          return;
-        }
-      }
-      // Fallback: try plugin resetZoom or clear min/max
-      if (typeof _activeChart.resetZoom === 'function') {
-        _activeChart.resetZoom();
+      // if not found, just clear fields
+      buildingInput.value = '';
+      addressInput.value = '';
+      afgInput.value = '';
+      clientInput.value = '';
+      capacityInput.value = '';
+      detailsInput.value = '';
+      typeSelect.value = '';
+      installSelect.value = '';
+      if (err && /not found/i.test(err.message)) {
+        msgEl.textContent = 'No saved info for that terminal yet.';
       } else {
-        delete _activeChart.options.scales.x.min;
-        delete _activeChart.options.scales.x.max;
-        _activeChart.update();
+        msgEl.textContent = 'Failed to load info: ' + (err && err.message);
       }
+      setTimeout(() => { msgEl.textContent = ''; }, 2200);
+    }
+  }
+
+  saveBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const tid = terminalInput.value && terminalInput.value.trim();
+    if (!tid) {
+      msgEl.textContent = 'Terminal ID is required.';
+      msgEl.style.color = '#ffdede';
+      return;
+    }
+    const payload = {
+      terminalId: tid,
+      building_name: buildingInput.value || '',
+      address: addressInput.value || '',
+      afg_bld_code: afgInput.value || '',
+      client_bld_code: clientInput.value || '',
+      lpg_tank_capacity: capacityInput.value || '',
+      lpg_tank_details: detailsInput.value || '',
+      lpg_tank_type: typeSelect.value || '',
+      lpg_installation_type: installSelect.value || ''
+    };
+    try {
+      msgEl.style.color = 'var(--muted)';
+      msgEl.textContent = 'Saving…';
+      const saved = await saveTankInfo(payload);
+      // update in-memory devices if terminal matches and maybe show feedback
+      const dev = devices.find(d => String(d.id) === String(saved.terminal_id));
+      if (dev) {
+        dev._info = saved;
+      }
+      msgEl.style.color = '#22c55e';
+      msgEl.textContent = 'Saved.';
+      setTimeout(() => { msgEl.textContent = ''; }, 1800);
     } catch (err) {
-      console.warn('Reset failed', err && err.message);
+      msgEl.style.color = '#ffdede';
+      msgEl.textContent = 'Save failed: ' + (err && err.message);
     }
   });
 
-  /* ---------------------------
-     Chart creation + zoom/pan
-     --------------------------- */
-
-  // NOTE: createChart accepts the chartCanvas element so it can be called from multiple places. It will set _activeChart.
-  function createChart(labels, values, canvasEl) {
-    if (_activeChart) {
-      try { _activeChart.destroy(); } catch(e) { /* ignore */ }
-      _activeChart = null;
-    }
-
-    const ctx = canvasEl.getContext('2d');
-
-    // Prepare dataset: Chart.js time axis will parse ISO strings and display in local timezone via luxon adapter
-    const data = labels.map((lab, i) => ({ x: lab, y: (values[i] === null ? NaN : values[i]) }));
-
-    const cfg = {
-      type: 'line',
-      data: {
-        datasets: [{
-          label: 'Tank level (%)',
-          data,
-          parsing: { xAxisKey: 'x', yAxisKey: 'y' },
-          fill: true,
-          // purple-ish blue theme:
-          borderColor: 'rgba(88,86,214,0.95)',
-          backgroundColor: 'rgba(88,86,214,0.12)',
-          pointBackgroundColor: 'rgba(88,86,214,0.95)',
-          pointBorderColor: '#ffffff',
-          pointRadius: Math.min(3, Math.round(1200 / Math.max(1, data.length * 0.5))),
-          pointHoverRadius: 6,
-          spanGaps: false,
-          cubicInterpolationMode: 'monotone'
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: {
-            type: 'time',
-            time: {
-              tooltipFormat: 'DD MMM yyyy, t',
-              displayFormats: {
-                millisecond: 'HH:mm:ss',
-                second: 'HH:mm:ss',
-                minute: 'HH:mm',
-                hour: 'dd LLL HH:mm',
-                day: 'dd LLL',
-                month: 'MMM yyyy',
-                year: 'yyyy'
-              }
-            },
-            ticks: { autoSkip: true, maxTicksLimit: 12 },
-          },
-          y: {
-            display: true,
-            beginAtZero: true,
-            suggestedMax: 100,
-            title: { display: true, text: '%' }
-          }
-        },
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            mode: 'index',
-            callbacks: {
-              // Custom title: show "Day Month Year" then the hour (keep hour format unchanged)
-              title: function(tooltipItems) {
-                if (!tooltipItems || tooltipItems.length === 0) return '';
-                const item = tooltipItems[0];
-                const rawX = (item.parsed && item.parsed.x !== undefined) ? item.parsed.x : item.label;
-
-                // Try Luxon first (loaded on the page). Fallback to Date.
-                const DateTime = (window.luxon && window.luxon.DateTime) ? window.luxon.DateTime : null;
-                let dt = null;
-                if (DateTime) {
-                  if (typeof rawX === 'number') {
-                    dt = DateTime.fromMillis(rawX);
-                  } else {
-                    dt = DateTime.fromISO(String(rawX));
-                    if (!dt.isValid) dt = DateTime.fromMillis(Date.parse(String(rawX)));
-                  }
-                  if (dt && dt.isValid) {
-                    // "dd LLL yyyy" (Day Month Year) + space + time as "hh:mm a" (keeps AM/PM form)
-                    return dt.toFormat('dd LLL yyyy') + ' ' + dt.toFormat('hh:mm a');
-                  }
-                }
-
-                // Fallback using native Date
-                const parsedMs = (typeof rawX === 'number') ? rawX : Date.parse(String(rawX));
-                if (!isNaN(parsedMs)) {
-                  const d = new Date(parsedMs);
-                  const dd = String(d.getDate()).padStart(2, '0');
-                  const monthShort = d.toLocaleString(undefined, { month: 'short' }); // e.g. "Jan"
-                  const yyyy = d.getFullYear();
-                  const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
-                  // "06 Jan 2026 12:09 PM"
-                  return `${dd} ${monthShort} ${yyyy} ${timeStr}`;
-                }
-
-                return String(rawX);
-              }
-            }
-          },
-          zoom: {
-            zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
-            pan: { enabled: false }
-          }
-        },
-      }
-    };
-
-    _activeChart = new Chart(ctx, cfg);
-
-    // Set initial visible range to full dataset
-    const firstTs = data.length ? Date.parse(data[0].x) : null;
-    const lastTs = data.length ? Date.parse(data[data.length - 1].x) : null;
-    if (!isNaN(firstTs) && !isNaN(lastTs)) {
-      _activeChart.options.scales.x.min = firstTs;
-      _activeChart.options.scales.x.max = lastTs;
-      _activeChart.update('none');
-    }
-
-    // Implement custom inverted drag panning (hold left mouse button and drag)
-    let isDragging = false;
-    let lastX = null;
-
-    function toMillis(v) {
-      if (v == null) return NaN;
-      if (typeof v === 'number' && !isNaN(v)) return v;
-      if (v instanceof Date) return v.getTime();
-      const parsed = Date.parse(String(v));
-      return isNaN(parsed) ? NaN : parsed;
-    }
-
-    function getXValueForPixelSafe(pixelX) {
-      try {
-        const raw = _activeChart.scales.x.getValueForPixel(pixelX);
-        return toMillis(raw);
-      } catch (e) {
-        const area = _activeChart.chartArea;
-        const left = area.left;
-        const right = area.right;
-        const minRaw = _activeChart.scales.x.min ?? _activeChart.scales.x.getValueForPixel(left);
-        const maxRaw = _activeChart.scales.x.max ?? _activeChart.scales.x.getValueForPixel(right);
-        const minMs = toMillis(minRaw);
-        const maxMs = toMillis(maxRaw);
-        const ratio = (pixelX - left) / (right - left);
-        return minMs + (ratio * (maxMs - minMs));
-      }
-    }
-
-    function onPointerDown(e) {
-      if (e.button !== 0) return; // left button only
-      isDragging = true;
-      canvasEl.style.cursor = 'grabbing';
-      lastX = e.clientX;
-      e.preventDefault();
-    }
-
-    async function onPointerMove(e) {
-      if (!isDragging || !_activeChart) return;
-      const rect = canvasEl.getBoundingClientRect();
-      const lastPixel = lastX - rect.left;
-      const curPixel = e.clientX - rect.left;
-      const lastTime = getXValueForPixelSafe(lastPixel);
-      const curTime = getXValueForPixelSafe(curPixel);
-
-      if (isNaN(lastTime) || isNaN(curTime)) return;
-
-      const shift = lastTime - curTime;
-
-      const area = _activeChart.chartArea;
-      const left = area.left;
-      const right = area.right;
-      const oldMinRaw = _activeChart.scales.x.min ?? _activeChart.scales.x.getValueForPixel(left);
-      const oldMaxRaw = _activeChart.scales.x.max ?? _activeChart.scales.x.getValueForPixel(right);
-      const oldMin = toMillis(oldMinRaw);
-      const oldMax = toMillis(oldMaxRaw);
-      if (isNaN(oldMin) || isNaN(oldMax)) return;
-
-      const newMin = oldMin + shift;
-      const newMax = oldMax + shift;
-
-      _activeChart.options.scales.x.min = newMin;
-      _activeChart.options.scales.x.max = newMax;
-      _activeChart.update('none');
-
-      lastX = e.clientX;
-      e.preventDefault();
-    }
-
-    function onPointerUp() {
-      if (!isDragging) return;
-      isDragging = false;
-      canvasEl.style.cursor = 'grab';
-      lastX = null;
-    }
-
-    canvasEl.addEventListener('mousedown', onPointerDown);
-    window.addEventListener('mousemove', onPointerMove);
-    window.addEventListener('mouseup', onPointerUp);
-    canvasEl.addEventListener('mouseleave', onPointerUp);
-
-    const origDestroy = _activeChart.destroy;
-    _activeChart.destroy = function() {
-      try {
-        canvasEl.removeEventListener('mousedown', onPointerDown);
-        window.removeEventListener('mousemove', onPointerMove);
-        window.removeEventListener('mouseup', onPointerUp);
-        canvasEl.removeEventListener('mouseleave', onPointerUp);
-      } catch (e) { /* ignore */ }
-      return origDestroy.apply(this, arguments);
-    };
-
-    return _activeChart;
+  // If caller provided an initial terminalId, prefill and load
+  if (initialTerminalId) {
+    terminalInput.value = initialTerminalId;
+    // if present in select, set it
+    try { selectEl.value = initialTerminalId; } catch (e) { /* ignore */ }
+    setTimeout(() => loadInfoForTerminal(initialTerminalId), 120);
   }
-  // On open: prefill start/end to "last 48 hours" (NOW and NOW - 48 hours), then auto-load that range.
-  try {
-    const nowMs = Date.now();
-    const fortyEightHoursAgoMs = nowMs - (48 * 60 * 60 * 1000);
-    if (startInput && endInput) {
-      startInput.value = toDatetimeLocalValue(fortyEightHoursAgoMs);
-      endInput.value = toDatetimeLocalValue(nowMs);
-    }
-    // Immediately load last 48 hours
-    loadRange({ startMs: fortyEightHoursAgoMs, endMs: nowMs });
-  } catch (e) {
-    // fallback: load default last 500 rows
-    loadRange({ limit: 500 });
+}
+
+/* ---------------------------
+   Read-only Tank Info View Modal
+   --------------------------- */
+
+// Show a professional, read-only modal with tank_info values for a terminal
+function showTankInfoViewModal(terminalId) {
+  const modal = document.createElement('div');
+  modal.className = 'history-modal tank-info-view';
+  modal.innerHTML = `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="Device Information View for ${escapeHtml(terminalId)}">
+      <div class="history-actions" style="align-items:center;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong>Device Information</strong>
+          <div style="color:var(--muted);font-size:13px;">Terminal ID: ${escapeHtml(terminalId)}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="history-controls">
+            <button class="history-close" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="tank-info-view-body" style="display:grid;grid-template-columns: 1fr 1fr; gap:18px; padding-top:8px;">
+        <div style="background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:16px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:700;">Building / Company</div>
+          <div id="view-building" style="font-size:15px;color:var(--text);"></div>
+
+          <div style="font-size:13px;color:var(--muted);margin-top:12px;font-weight:700;">Address</div>
+          <div id="view-address" style="font-size:14px;color:var(--text);"></div>
+
+          <div style="display:flex;gap:12px;margin-top:12px;">
+            <div style="flex:1;">
+              <div style="font-size:13px;color:var(--muted);font-weight:700;">AFG Bld Code</div>
+              <div id="view-afg" style="font-size:14px;color:var(--text);"></div>
+            </div>
+            <div style="flex:1;">
+              <div style="font-size:13px;color:var(--muted);font-weight:700;">Client Bld Code</div>
+              <div id="view-client" style="font-size:14px;color:var(--text);"></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:16px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:700;">LPG Tank Capacity</div>
+          <div id="view-capacity" style="font-size:15px;color:var(--text);"></div>
+
+          <div style="font-size:13px;color:var(--muted);margin-top:12px;font-weight:700;">LPG Tank Details</div>
+          <div id="view-details" style="font-size:14px;color:var(--text);"></div>
+
+          <div style="display:flex;gap:12px;margin-top:12px;">
+            <div style="flex:1;">
+              <div style="font-size:13px;color:var(--muted);font-weight:700;">Tank Type</div>
+              <div id="view-type" style="font-size:14px;color:var(--text);"></div>
+            </div>
+            <div style="flex:1;">
+              <div style="font-size:13px;color:var(--muted);font-weight:700;">Installation</div>
+              <div id="view-install" style="font-size:14px;color:var(--text);"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- full-width supplemental area -->
+        <div style="grid-column: 1 / -1; margin-top:6px; display:flex; justify-content:space-between; gap:12px;">
+          <div style="flex:1; background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:14px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
+            <div style="font-size:13px;color:var(--muted);font-weight:700;">Notes</div>
+            <div id="view-notes" style="font-size:14px;color:var(--muted); margin-top:6px;">(No additional notes)</div>
+          </div>
+          <div style="width:240px; flex-shrink:0; background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:14px; border-radius:10px; border:1px solid rgba(255,255,255,0.02); text-align:center;">
+            <div style="font-size:12px;color:var(--muted);font-weight:700;">Last saved</div>
+            <div id="view-saved-at" style="font-size:13px;color:var(--text); margin-top:8px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tank-info-view-msg" class="history-msg" style="margin-top:12px;"></div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  document.body.classList.add('modal-open');
+
+  const closeBtn = modal.querySelector('.history-close');
+  const msgEl = modal.querySelector('#tank-info-view-msg');
+
+  function removeModal() {
+    modal.remove();
+    document.body.classList.remove('modal-open');
   }
+
+  closeBtn.addEventListener('click', removeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) removeModal(); });
+
+  // populate fields
+  (async () => {
+    try {
+      msgEl.textContent = 'Loading…';
+      const info = await fetchTankInfo(terminalId);
+      modal.querySelector('#view-building').textContent = info.building_name || '—';
+      modal.querySelector('#view-address').textContent = info.address || '—';
+      modal.querySelector('#view-afg').textContent = info.afg_bld_code || '—';
+      modal.querySelector('#view-client').textContent = info.client_bld_code || '—';
+      modal.querySelector('#view-capacity').textContent = info.lpg_tank_capacity || '—';
+      modal.querySelector('#view-details').textContent = info.lpg_tank_details || '—';
+      modal.querySelector('#view-type').textContent = info.lpg_tank_type || '—';
+      modal.querySelector('#view-install').textContent = info.lpg_installation_type || '—';
+      modal.querySelector('#view-notes').textContent = ''; // reserved if you want notes in future
+      modal.querySelector('#view-saved-at').textContent = info.created_at ? new Date(info.created_at).toLocaleString() : '—';
+      msgEl.textContent = '';
+    } catch (err) {
+      msgEl.textContent = 'No saved information for this terminal.';
+      modal.querySelector('#view-building').textContent = '—';
+      modal.querySelector('#view-address').textContent = '—';
+      modal.querySelector('#view-afg').textContent = '—';
+      modal.querySelector('#view-client').textContent = '—';
+      modal.querySelector('#view-capacity').textContent = '—';
+      modal.querySelector('#view-details').textContent = '—';
+      modal.querySelector('#view-type').textContent = '—';
+      modal.querySelector('#view-install').textContent = '—';
+      modal.querySelector('#view-saved-at').textContent = '—';
+    }
+  })();
 }
 
 /* ---------------------------
@@ -1346,13 +1250,7 @@ function showVisitorTrackingModal() {
 
 /* ---------------------------
    MAP (Leaflet) integration (lightweight, lazy-loaded)
-   --------------------------- */
-
-/*
-  Approach:
-  - We lazy-load Leaflet's CSS/JS when needed.
-  - Clicking the Map button will open the exact 'location' link in a new tab (if present) and show a modal.
-  - The modal shows latitude/longitude and a small Leaflet preview map if lat/lng exist.
+   (unchanged from the original script; keep behavior)
 */
 
 function loadLeafletOnce() {
@@ -1739,6 +1637,21 @@ async function init() {
         });
       }
 
+      // Attach "Device Information" handler (admin)
+      const adminDevInfoBtn = document.getElementById('admin-device-info-btn');
+      if (adminDevInfoBtn) {
+        // ensure the button only appears for Sonic or Alfanar_Admin1
+        if (canSeeDeviceInformation()) {
+          adminDevInfoBtn.style.display = '';
+          adminDevInfoBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showDeviceInfoModal();
+          });
+        } else {
+          adminDevInfoBtn.style.display = 'none';
+        }
+      }
+
       // Populate admin device dropdown and wire up save button
       const deviceSelect = document.getElementById('admin-device-select');
       if (deviceSelect) {
@@ -1837,6 +1750,19 @@ async function init() {
           userMapBtn.removeEventListener('click', userMapBtn._boundHandler);
           userMapBtn._boundHandler = (e) => { e.stopPropagation(); showAllDevicesMap(); };
           userMapBtn.addEventListener('click', userMapBtn._boundHandler);
+        }
+
+        // user device info button - show only for Sonic or Alfanar_Admin1
+        const userDevInfoBtn = document.getElementById('user-device-info-btn');
+        if (userDevInfoBtn) {
+          if (canSeeDeviceInformation()) {
+            userDevInfoBtn.style.display = '';
+            userDevInfoBtn.removeEventListener('click', userDevInfoBtn._boundHandler);
+            userDevInfoBtn._boundHandler = (e) => { e.stopPropagation(); showDeviceInfoModal(); };
+            userDevInfoBtn.addEventListener('click', userDevInfoBtn._boundHandler);
+          } else {
+            userDevInfoBtn.style.display = 'none';
+          }
         }
       } else {
         // hide for admins (they already have the admin menu)

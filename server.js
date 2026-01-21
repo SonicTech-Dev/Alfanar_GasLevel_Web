@@ -1,3 +1,4 @@
+contents=
 require('dotenv').config();
 
 const express = require('express');
@@ -105,11 +106,78 @@ async function createSitesTableIfNeeded() {
   }
 }
 
+/* Ensure tank_titles table exists (used elsewhere) */
+async function createTitlesTableIfNeeded() {
+  const createSql = `
+    CREATE TABLE IF NOT EXISTS tank_titles (
+      no SERIAL PRIMARY KEY,
+      terminal_id TEXT UNIQUE,
+      sn TEXT,
+      tank_title TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS tank_titles_terminal_idx ON tank_titles (terminal_id);
+  `;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(createSql);
+      console.log('Ensured tank_titles table exists');
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Failed to create tank_titles table:', err && err.message);
+  }
+}
 
+/* Ensure tank_info table exists
+   Columns for device information collected via the new UI:
+     - terminal_id (unique)
+     - building_name
+     - address
+     - afg_bld_code
+     - client_bld_code
+     - lpg_tank_capacity
+     - lpg_tank_details
+     - lpg_tank_type
+     - lpg_installation_type
+*/
+async function createTankInfoTableIfNeeded() {
+  const createSql = `
+    CREATE TABLE IF NOT EXISTS tank_info (
+      id SERIAL PRIMARY KEY,
+      terminal_id TEXT UNIQUE,
+      building_name TEXT,
+      address TEXT,
+      afg_bld_code TEXT,
+      client_bld_code TEXT,
+      lpg_tank_capacity TEXT,
+      lpg_tank_details TEXT,
+      lpg_tank_type TEXT,
+      lpg_installation_type TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS tank_info_terminal_idx ON tank_info (terminal_id);
+  `;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(createSql);
+      console.log('Ensured tank_info table exists');
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Failed to create tank_info table:', err && err.message);
+  }
+}
 
 // attempt to create the table on startup (non-blocking)
 createLoginAttemptsTableIfNeeded().catch(e => console.warn('Create table error', e && e.message));
 createSitesTableIfNeeded().catch(e => console.warn('Create sites table error', e && e.message));
+createTitlesTableIfNeeded().catch(e => console.warn('Create titles table error', e && e.message));
+createTankInfoTableIfNeeded().catch(e => console.warn('Create tank_info table error', e && e.message));
 
 /* XML helpers */
 function nodeText(v) {
@@ -589,80 +657,117 @@ app.post('/api/titles', express.json(), async (req, res) => {
   }
 });
 
-/* NEW: Sites endpoints
-   GET /api/sites -> returns { count, rows } where each row includes terminal_id, site, location, latitude, longitude
-   POST /api/sites -> upserts a site record by terminal_id
+/* NEW: Tank info endpoints
+   GET /api/tank-info?terminalId=... -> returns single record for terminalId (or 404)
+   GET /api/tank-info -> returns all records {count, rows}
+   POST /api/tank-info -> upsert by terminal_id and return saved row
 */
 
-app.get('/api/sites', async (req, res) => {
+app.get('/api/tank-info', async (req, res) => {
   try {
+    const terminalId = req.query.terminalId;
     const client = await pool.connect();
     try {
-      const q = `SELECT id, terminal_id, site, location, latitude, longitude, created_at FROM tank_sites ORDER BY created_at ASC`;
-      const r = await client.query(q);
-      const rows = (r.rows || []).map(row => ({
-        id: row.id,
-        terminal_id: row.terminal_id,
-        site: row.site,
-        location: row.location,
-        latitude: row.latitude,
-        longitude: row.longitude,
-        created_at: normalizeDbTimestampToIso(row.created_at),
-      }));
-      res.json({ count: rows.length, rows });
+      if (terminalId) {
+        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, created_at FROM tank_info WHERE terminal_id = $1 LIMIT 1`;
+        const r = await client.query(q, [String(terminalId)]);
+        if (!r.rows || r.rows.length === 0) {
+          return res.status(404).json({ error: 'not found' });
+        }
+        const row = r.rows[0];
+        return res.json({
+          terminal_id: row.terminal_id,
+          building_name: row.building_name,
+          address: row.address,
+          afg_bld_code: row.afg_bld_code,
+          client_bld_code: row.client_bld_code,
+          lpg_tank_capacity: row.lpg_tank_capacity,
+          lpg_tank_details: row.lpg_tank_details,
+          lpg_tank_type: row.lpg_tank_type,
+          lpg_installation_type: row.lpg_installation_type,
+          created_at: normalizeDbTimestampToIso(row.created_at)
+        });
+      } else {
+        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, created_at FROM tank_info ORDER BY created_at DESC`;
+        const r = await client.query(q);
+        const rows = (r.rows || []).map(row => ({
+          terminal_id: row.terminal_id,
+          building_name: row.building_name,
+          address: row.address,
+          afg_bld_code: row.afg_bld_code,
+          client_bld_code: row.client_bld_code,
+          lpg_tank_capacity: row.lpg_tank_capacity,
+          lpg_tank_details: row.lpg_tank_details,
+          lpg_tank_type: row.lpg_tank_type,
+          lpg_installation_type: row.lpg_installation_type,
+          created_at: normalizeDbTimestampToIso(row.created_at)
+        }));
+        return res.json({ count: rows.length, rows });
+      }
     } finally {
       client.release();
     }
   } catch (err) {
-    console.warn('GET /api/sites failed:', err && err.message);
-    res.status(500).json({ error: 'failed to fetch sites' });
+    console.warn('GET /api/tank-info failed:', err && err.message);
+    res.status(500).json({ error: 'failed to fetch tank info' });
   }
 });
 
-app.post('/api/sites', express.json(), async (req, res) => {
+app.post('/api/tank-info', express.json(), async (req, res) => {
   try {
     const body = req.body || {};
     const terminalId = body.terminalId ? String(body.terminalId).trim() : null;
-    const site = body.site ? String(body.site).trim() : null;
-    const location = body.location ? String(body.location).trim() : null;
-    const latitude = (body.latitude !== undefined && body.latitude !== null && body.latitude !== '') ? Number(body.latitude) : null;
-    const longitude = (body.longitude !== undefined && body.longitude !== null && body.longitude !== '') ? Number(body.longitude) : null;
-
     if (!terminalId) {
       return res.status(400).json({ error: 'terminalId is required' });
     }
 
+    const building_name = body.building_name !== undefined ? String(body.building_name).trim() : null;
+    const address = body.address !== undefined ? String(body.address).trim() : null;
+    const afg_bld_code = body.afg_bld_code !== undefined ? String(body.afg_bld_code).trim() : null;
+    const client_bld_code = body.client_bld_code !== undefined ? String(body.client_bld_code).trim() : null;
+    const lpg_tank_capacity = body.lpg_tank_capacity !== undefined ? String(body.lpg_tank_capacity).trim() : null;
+    const lpg_tank_details = body.lpg_tank_details !== undefined ? String(body.lpg_tank_details).trim() : null;
+    const lpg_tank_type = body.lpg_tank_type !== undefined ? String(body.lpg_tank_type).trim() : null;
+    const lpg_installation_type = body.lpg_installation_type !== undefined ? String(body.lpg_installation_type).trim() : null;
+
     const client = await pool.connect();
     try {
       const q = `
-        INSERT INTO tank_sites (terminal_id, site, location, latitude, longitude)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (terminal_id) DO UPDATE
-          SET site = EXCLUDED.site,
-              location = EXCLUDED.location,
-              latitude = EXCLUDED.latitude,
-              longitude = EXCLUDED.longitude
-        RETURNING id, terminal_id, site, location, latitude, longitude, created_at;
+        INSERT INTO tank_info (terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        ON CONFLICT (terminal_id) DO UPDATE SET
+          building_name = EXCLUDED.building_name,
+          address = EXCLUDED.address,
+          afg_bld_code = EXCLUDED.afg_bld_code,
+          client_bld_code = EXCLUDED.client_bld_code,
+          lpg_tank_capacity = EXCLUDED.lpg_tank_capacity,
+          lpg_tank_details = EXCLUDED.lpg_tank_details,
+          lpg_tank_type = EXCLUDED.lpg_tank_type,
+          lpg_installation_type = EXCLUDED.lpg_installation_type
+        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, created_at;
       `;
-      const params = [terminalId, site, location, latitude, longitude];
+      const params = [terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type];
       const r = await client.query(q, params);
       const row = r.rows && r.rows[0] ? r.rows[0] : null;
-      const out = row ? {
-        id: row.id,
+      if (!row) return res.status(500).json({ error: 'failed to save' });
+      return res.status(201).json({
         terminal_id: row.terminal_id,
-        site: row.site,
-        location: row.location,
-        latitude: row.latitude,
-        longitude: row.longitude,
+        building_name: row.building_name,
+        address: row.address,
+        afg_bld_code: row.afg_bld_code,
+        client_bld_code: row.client_bld_code,
+        lpg_tank_capacity: row.lpg_tank_capacity,
+        lpg_tank_details: row.lpg_tank_details,
+        lpg_tank_type: row.lpg_tank_type,
+        lpg_installation_type: row.lpg_installation_type,
         created_at: normalizeDbTimestampToIso(row.created_at)
-      } : null;
-      return res.status(201).json(out);
+      });
     } finally {
       client.release();
     }
   } catch (err) {
-    console.warn('POST /api/sites failed:', err && err.message);
-    res.status(500).json({ error: 'failed to save site' });
+    console.warn('POST /api/tank-info failed:', err && err.message);
+    res.status(500).json({ error: 'failed to save tank info' });
   }
 });
 

@@ -33,6 +33,16 @@
     @media (max-width:640px){
       .history-panel { padding:12px; }
     }
+
+    /* Small tweaks so the new view modal looks very clean */
+    .tank-info-view .history-panel {
+      max-width: 920px;
+      padding: 22px;
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(12,16,34,0.98), rgba(10,14,30,0.98));
+      border: 1px solid rgba(255,255,255,0.03);
+      box-shadow: 0 30px 90px rgba(2,6,23,0.75);
+    }
   </style>
 </head>
 <body>
@@ -96,6 +106,11 @@
           <button id="open-all-map" class="btn" type="button">Show All Devices Map</button>
         </div>
 
+        <!-- Device Information button (no action yet) -->
+        <div style="margin-top:8px;">
+          <button id="admin-device-info-btn" class="btn" type="button" title="Device Information">Device Information</button>
+        </div>
+
         <!-- Manage Site / Location form (visible to admins) -->
         <div style="margin-top:14px;">
           <strong style="display:block;margin-bottom:8px;color:var(--muted)">Manage Site / Location</strong>
@@ -130,8 +145,9 @@
   <div style="display:flex;flex-direction:column;gap:8px;">
     <strong style="color:var(--text);font-size:16px">User Menu</strong>
     <div style="color:var(--muted);font-size:13px">Quick access</div>
-    <div style="margin-top:6px;">
+    <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
       <button id="user-open-all-map" class="btn" type="button">Show All Devices Map</button>
+      <button id="user-device-info-btn" class="btn" type="button" title="Device Information">Device Information</button>
     </div>
   </div>
 </div>
@@ -158,6 +174,10 @@
     (function () {
       const USERNAME = 'Alfanar_GasLevel1';
       const PASSWORD = 'GasLevel_Alfanar1';
+
+      // Additional normal-equivalent user (same access as USERNAME/PASSWORD)
+      const ALT_USERNAME = 'Alfanar_Admin1';
+      const ALT_PASSWORD = 'Admin_Alfanar1';
 
       // Admin credentials (client-side example)
       const ADMIN_USERNAME = 'Sonic';
@@ -217,6 +237,7 @@
 
           try { window._clientAuthenticated = true; } catch (e) { /* ignore */ }
           try { window._clientIsAdmin = true; } catch (e) { /* ignore */ }
+          try { window._clientUsername = u; } catch (e) { /* ignore */ }
 
           hideModal();
 
@@ -228,13 +249,14 @@
           return;
         }
 
-        // simple exact-match check for normal user
-        if (u === USERNAME && p === PASSWORD) {
+        // simple exact-match check for normal user (accepts either USERNAME or ALT_USERNAME)
+        if ((u === USERNAME && p === PASSWORD) || (u === ALT_USERNAME && p === ALT_PASSWORD)) {
           // Log attempt (normal user success)
           logAttempt(u, false, true, 'user login success');
 
           try { window._clientAuthenticated = true; } catch (e) { /* ignore */ }
           try { window._clientIsAdmin = false; } catch (e) { /* ignore */ }
+          try { window._clientUsername = u; } catch (e) { /* ignore */ }
 
           hideModal();
 
@@ -259,6 +281,7 @@
         // simply reload the page; since auth isn't persisted, reload will still show the login modal
         try { window._clientAuthenticated = false; } catch (e) { /* ignore */ }
         try { window._clientIsAdmin = false; } catch (e) { /* ignore */ }
+        try { window._clientUsername = ''; } catch (e) { /* ignore */ }
         hideModal();
         window.location.reload();
       });

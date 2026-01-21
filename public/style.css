@@ -704,3 +704,28 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
   text-decoration:underline;
   font-weight:700;
 }
+
+/* ==========================
+   NEW: Select/option fixes
+   ==========================
+   Ensure native <select> dropdown text is visible:
+   - closed <select> (selected value) stays light (var(--text))
+   - opened native option list uses dark background so options don't blend with page background
+   - option text uses the app foreground color for readability inside the dark list
+*/
+select {
+  /* closed select (the selected value shown in the control) should keep the app foreground */
+  color: var(--text) !important;
+}
+
+/* Opened native option list: dark background and light text for good contrast */
+select option {
+  background-color: #000000 !important; /* black background for opened options */
+  color: var(--text) !important;         /* light text for readability */
+}
+
+/* keep selects using the shared .graph-title-input class consistent (closed state) */
+.graph-title-input select,
+select.graph-title-input {
+  color: var(--text) !important;
+}
