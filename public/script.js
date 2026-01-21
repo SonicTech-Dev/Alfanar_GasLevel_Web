@@ -238,6 +238,8 @@ function createCard(device) {
     <div class="meta">
       <div class="term-row admin-only" style="display:none;"><strong>Terminal ID:</strong> <span class="term">${escapeHtml(device.id)}</span></div>
       <div><strong>Timestamp:</strong> <span class="time">-</span></div>
+      <div><strong>GSM:</strong> <span class="gsm" style="margin-left:6px">-</span></div>
+      <div><strong>Battery:</strong> <span class="battery" style="margin-left:6px">-</span></div>
     </div>
     </div>
 
@@ -757,7 +759,7 @@ async function fetchTankInfo(terminalId) {
   return resp.json();
 }
 
-// Save (upsert) tank info payload: { terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type }
+// Save (upsert) tank info payload: { terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes }
 async function saveTankInfo(payload) {
   const resp = await fetch('/api/tank-info', {
     method: 'POST',
@@ -775,6 +777,7 @@ function buildDeviceInfoModalHtml(uniqueId) {
   // fields:
   // building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details
   // dropdowns: lpg_tank_type, lpg_installation_type
+  // added: notes textarea
   return `
     <div class="history-panel" role="dialog" aria-modal="true" aria-label="Device Information">
       <div class="history-actions">
@@ -833,6 +836,11 @@ function buildDeviceInfoModalHtml(uniqueId) {
             <option value="B/G">B/G</option>
           </select>
         </div>
+
+        <div style="flex:1 1 100%;min-width:280px;margin-top:8px;">
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">Notes</label>
+          <textarea id="device-info-notes-${uniqueId}" class="graph-title-input" placeholder="Notes (optional)" style="height:96px;resize:vertical;padding:8px;"></textarea>
+        </div>
       </div>
 
       <div id="device-info-msg-${uniqueId}" class="history-msg" style="margin-top:10px;"></div>
@@ -858,6 +866,7 @@ function showDeviceInfoModal(initialTerminalId) {
   const detailsInput = modal.querySelector(`#device-info-details-${unique}`);
   const typeSelect = modal.querySelector(`#device-info-type-${unique}`);
   const installSelect = modal.querySelector(`#device-info-install-${unique}`);
+  const notesInput = modal.querySelector(`#device-info-notes-${unique}`);
   const saveBtn = modal.querySelector('.device-info-save');
   const closeBtn = modal.querySelector('.history-close');
   const msgEl = modal.querySelector(`#device-info-msg-${unique}`);
@@ -907,6 +916,7 @@ function showDeviceInfoModal(initialTerminalId) {
       detailsInput.value = info.lpg_tank_details || '';
       typeSelect.value = info.lpg_tank_type || '';
       installSelect.value = info.lpg_installation_type || '';
+      notesInput.value = info.notes || '';
       msgEl.textContent = 'Loaded existing info.';
       setTimeout(() => { msgEl.textContent = ''; }, 1600);
     } catch (err) {
@@ -919,6 +929,7 @@ function showDeviceInfoModal(initialTerminalId) {
       detailsInput.value = '';
       typeSelect.value = '';
       installSelect.value = '';
+      notesInput.value = '';
       if (err && /not found/i.test(err.message)) {
         msgEl.textContent = 'No saved info for that terminal yet.';
       } else {
@@ -945,7 +956,8 @@ function showDeviceInfoModal(initialTerminalId) {
       lpg_tank_capacity: capacityInput.value || '',
       lpg_tank_details: detailsInput.value || '',
       lpg_tank_type: typeSelect.value || '',
-      lpg_installation_type: installSelect.value || ''
+      lpg_installation_type: installSelect.value || '',
+      notes: notesInput.value || ''
     };
     try {
       msgEl.style.color = 'var(--muted)';
@@ -1079,7 +1091,8 @@ function showTankInfoViewModal(terminalId) {
       modal.querySelector('#view-details').textContent = info.lpg_tank_details || '—';
       modal.querySelector('#view-type').textContent = info.lpg_tank_type || '—';
       modal.querySelector('#view-install').textContent = info.lpg_installation_type || '—';
-      modal.querySelector('#view-notes').textContent = ''; // reserved if you want notes in future
+      // display notes returned by API if present
+      modal.querySelector('#view-notes').textContent = (info.notes && String(info.notes).trim()) ? info.notes : '(No additional notes)';
       modal.querySelector('#view-saved-at').textContent = info.created_at ? new Date(info.created_at).toLocaleString() : '—';
       msgEl.textContent = '';
     } catch (err) {
@@ -1092,6 +1105,7 @@ function showTankInfoViewModal(terminalId) {
       modal.querySelector('#view-details').textContent = '—';
       modal.querySelector('#view-type').textContent = '—';
       modal.querySelector('#view-install').textContent = '—';
+      modal.querySelector('#view-notes').textContent = '(No additional notes)';
       modal.querySelector('#view-saved-at').textContent = '—';
     }
   })();
