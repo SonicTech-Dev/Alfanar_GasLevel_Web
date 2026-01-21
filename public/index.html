@@ -154,24 +154,6 @@
   <!-- jsPDF for PDF export -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 
-  <!--
-    SIMPLE CLIENT-SIDE LOGIN SCRIPT
-    - Credentials (as requested):
-      Username: Alfanar_GasLevel1
-      Password: GasLevel_Alfanar1
-
-    - ADMIN credentials (client-only example; change to what you want):
-      ADMIN_USERNAME: Sonic
-      ADMIN_PASSWORD: Sonic@123
-
-    Behavior:
-    - Shows modal overlay when the site loads every time (no persistence).
-    - Authentication is required on each page load/refresh.
-    - After a successful sign-in the app is started for the current page load only.
-    - Admin login sets window._clientIsAdmin = true so the app can reveal admin features.
-    - Each login attempt (success or failure) is logged to the server via POST /api/login-attempt.
-      The client never sends the password to the server.
-  -->
   <script>
     (function () {
       const USERNAME = 'Alfanar_GasLevel1';
