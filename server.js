@@ -1,4 +1,4 @@
-const fs = require('fs');
+contents=
 require('dotenv').config();
 
 const express = require('express');
@@ -131,8 +131,18 @@ async function createTitlesTableIfNeeded() {
   }
 }
 
-/* Ensure tank_info table exists (used elsewhere)
-   Note: we include a 'notes' TEXT column and run ALTER TABLE ADD COLUMN IF NOT EXISTS
+/* Ensure tank_info table exists
+   Columns for device information collected via the new UI:
+     - terminal_id (unique)
+     - building_name
+     - address
+     - afg_bld_code
+     - client_bld_code
+     - lpg_tank_capacity
+     - lpg_tank_details
+     - lpg_tank_type
+     - lpg_installation_type
+     - notes (TEXT)  <-- newly supported
 */
 async function createTankInfoTableIfNeeded() {
   const createSql = `
@@ -152,17 +162,11 @@ async function createTankInfoTableIfNeeded() {
     );
     CREATE INDEX IF NOT EXISTS tank_info_terminal_idx ON tank_info (terminal_id);
   `;
-  const alterSql = `
-    ALTER TABLE tank_info
-      ADD COLUMN IF NOT EXISTS notes TEXT;
-  `;
   try {
     const client = await pool.connect();
     try {
       await client.query(createSql);
-      // ensure notes column exists for older installations
-      await client.query(alterSql);
-      console.log('Ensured tank_info table exists (including notes column)');
+      console.log('Ensured tank_info table exists');
     } finally {
       client.release();
     }
@@ -289,8 +293,7 @@ function normalizeDbTimestampToIso(val) {
 /* New: perform a SOAP fetch and return a normalized reading object.
    Returns:
    {
-     idVal, snVal, numericLevelVal, timestampVal, rawValue, timestampRaw,
-     gsmVal (number|null), batteryCode (string|null), batteryVoltage (number|null)
+     idVal, snVal, numericLevelVal, timestampVal, rawValue, timestampRaw
    }
 */
 async function getTankReading(terminalId) {
@@ -349,29 +352,6 @@ async function getTankReading(terminalId) {
   const snField = terminalTopName || extractField(target, ['SerialNumber','Serial','Name','NAME']);
   const numericValue = parseNumericValue(rawValue);
 
-  // Helper to find other variables by name (case-insensitive)
-  function findVarValue(names) {
-    const up = new Set(names.map(n => String(n).toUpperCase()));
-    const it = items.find(item => {
-      const name = nodeText(item.Name || item.name) || '';
-      return up.has(name.toUpperCase());
-    });
-    return it ? extractField(it, valueKeys) : null;
-  }
-
-  // Get RSSI (GSM), battery code and battery voltage
-  const gsmRaw = findVarValue(['RSSI']); // typically numeric e.g., "18" or "31"
-  const gsmVal = (gsmRaw != null) ? parseNumericValue(gsmRaw) : null;
-
-  // battery code (BATT_COM_MOD_B or BATT_COM_MOD_B)
-  const batteryCodeRaw = findVarValue(['BATT_COM_MOD_B', 'BATT_COM_MOD_B', 'BATT_COM_MOD_B'.toUpperCase()]);
-  // fallback to BATT_COM_MOD_B alternatives or BATT_COM_MOD_B .. we included duplicates but it's okay
-  const batteryCode = batteryCodeRaw || findVarValue(['BATT_COM_MOD_B', 'BATT_COM_MOD_B']) || null;
-
-  // sometimes there's a BATT_COM_MOD_B value like "B4"; fallback to BATT_COM_MOD_B under different names
-  const batteryVoltageRaw = findVarValue(['BATT','BATT_COM_MOD','BATT_COM_MOD_B']);
-  const batteryVoltage = batteryVoltageRaw ? parseNumericValue(batteryVoltageRaw) : null;
-
   return {
     idVal: idField,
     snVal: snField,
@@ -379,9 +359,6 @@ async function getTankReading(terminalId) {
     timestampVal: timestampIso,
     rawValue,
     timestampRaw,
-    gsmVal,
-    batteryCode,
-    batteryVoltage,
   };
 }
 
@@ -585,7 +562,7 @@ app.get('/api/login-attempts', async (req, res) => {
 /* API endpoints (existing) */
 
 // Return a live reading for a single terminal (no DB write here).
-// Extended to include GSM (as "gsm") and battery level code (as "battery") and batteryVoltage (volts)
+
 app.get('/api/tank', async (req, res) => {
   try {
     const terminalId = req.query.terminalId;
@@ -593,16 +570,7 @@ app.get('/api/tank', async (req, res) => {
 
     try {
       const reading = await getTankReading(terminalId);
-      // return existing fields plus the new ones
-      return res.json({
-        value: reading.rawValue,
-        timestamp: reading.timestampVal,
-        id: reading.idVal,
-        sn: reading.snVal,
-        gsm: (reading.gsmVal == null ? null : Number(reading.gsmVal)),
-        battery: reading.batteryCode || null,
-        batteryVoltage: (reading.batteryVoltage == null ? null : Number(reading.batteryVoltage))
-      });
+      return res.json({ value: reading.rawValue, timestamp: reading.timestampVal, id: reading.idVal, sn: reading.snVal });
     } catch (err) {
       if (err && err.status === 404) return res.status(404).json({ error: 'Device Offline' });
       return res.status(502).json({ error: 'Failed to fetch SOAP data', message: err && err.message });
@@ -691,104 +659,6 @@ app.post('/api/titles', express.json(), async (req, res) => {
   }
 });
 
-/* NEW: Sites endpoints (used by the frontend map functions)
-   GET /api/sites           -> { rows: [...] }
-   GET /api/sites?terminalId=123 -> { rows: [...] } (single element array if found)
-   POST /api/sites          -> upsert by terminal_id and return the saved row
-*/
-app.get('/api/sites', async (req, res) => {
-  try {
-    const terminalId = req.query.terminalId ? String(req.query.terminalId).trim() : null;
-    const client = await pool.connect();
-    try {
-      if (terminalId) {
-        const q = `SELECT terminal_id, site, location, latitude, longitude, created_at FROM tank_sites WHERE terminal_id = $1 LIMIT 1`;
-        const r = await client.query(q, [terminalId]);
-        const rows = (r.rows || []).map(row => ({
-          terminal_id: row.terminal_id,
-          site: row.site,
-          location: row.location,
-          latitude: row.latitude === null || row.latitude === undefined ? null : Number(row.latitude),
-          longitude: row.longitude === null || row.longitude === undefined ? null : Number(row.longitude),
-          created_at: normalizeDbTimestampToIso(row.created_at)
-        }));
-        return res.json({ rows });
-      } else {
-        const q = `SELECT terminal_id, site, location, latitude, longitude, created_at FROM tank_sites ORDER BY created_at DESC`;
-        const r = await client.query(q);
-        const rows = (r.rows || []).map(row => ({
-          terminal_id: row.terminal_id,
-          site: row.site,
-          location: row.location,
-          latitude: row.latitude === null || row.latitude === undefined ? null : Number(row.latitude),
-          longitude: row.longitude === null || row.longitude === undefined ? null : Number(row.longitude),
-          created_at: normalizeDbTimestampToIso(row.created_at)
-        }));
-        return res.json({ rows });
-      }
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn('GET /api/sites failed:', err && err.message);
-    res.status(500).json({ error: 'failed to fetch sites' });
-  }
-});
-
-app.post('/api/sites', express.json(), async (req, res) => {
-  try {
-    const body = req.body || {};
-    const terminalId = body.terminalId ? String(body.terminalId).trim() : null;
-    if (!terminalId) return res.status(400).json({ error: 'terminalId is required' });
-
-    const site = body.site !== undefined ? (String(body.site).trim() || null) : null;
-    const location = body.location !== undefined ? (String(body.location).trim() || null) : null;
-
-    // allow latitude/longitude to be numbers or strings that parse to numbers
-    let latitude = null;
-    let longitude = null;
-    if (body.latitude !== undefined && body.latitude !== null && body.latitude !== '') {
-      const parsedLat = Number(body.latitude);
-      latitude = isNaN(parsedLat) ? null : parsedLat;
-    }
-    if (body.longitude !== undefined && body.longitude !== null && body.longitude !== '') {
-      const parsedLng = Number(body.longitude);
-      longitude = isNaN(parsedLng) ? null : parsedLng;
-    }
-
-    const client = await pool.connect();
-    try {
-      const q = `
-        INSERT INTO tank_sites (terminal_id, site, location, latitude, longitude)
-        VALUES ($1,$2,$3,$4,$5)
-        ON CONFLICT (terminal_id) DO UPDATE SET
-          site = EXCLUDED.site,
-          location = EXCLUDED.location,
-          latitude = EXCLUDED.latitude,
-          longitude = EXCLUDED.longitude
-        RETURNING terminal_id, site, location, latitude, longitude, created_at;
-      `;
-      const params = [terminalId, site, location, latitude, longitude];
-      const r = await client.query(q, params);
-      const row = r.rows && r.rows[0] ? r.rows[0] : null;
-      if (!row) return res.status(500).json({ error: 'failed to save site' });
-      return res.status(201).json({
-        terminal_id: row.terminal_id,
-        site: row.site,
-        location: row.location,
-        latitude: row.latitude === null || row.latitude === undefined ? null : Number(row.latitude),
-        longitude: row.longitude === null || row.longitude === undefined ? null : Number(row.longitude),
-        created_at: normalizeDbTimestampToIso(row.created_at)
-      });
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn('POST /api/sites failed:', err && err.message);
-    res.status(500).json({ error: 'failed to save site' });
-  }
-});
-
 /* NEW: Tank info endpoints
    GET /api/tank-info?terminalId=... -> returns single record for terminalId (or 404)
    GET /api/tank-info -> returns all records {count, rows}
@@ -817,7 +687,7 @@ app.get('/api/tank-info', async (req, res) => {
           lpg_tank_details: row.lpg_tank_details,
           lpg_tank_type: row.lpg_tank_type,
           lpg_installation_type: row.lpg_installation_type,
-          notes: row.notes || '',
+          notes: row.notes || null,
           created_at: normalizeDbTimestampToIso(row.created_at)
         });
       } else {
@@ -833,7 +703,7 @@ app.get('/api/tank-info', async (req, res) => {
           lpg_tank_details: row.lpg_tank_details,
           lpg_tank_type: row.lpg_tank_type,
           lpg_installation_type: row.lpg_installation_type,
-          notes: row.notes || '',
+          notes: row.notes || null,
           created_at: normalizeDbTimestampToIso(row.created_at)
         }));
         return res.json({ count: rows.length, rows });
@@ -863,7 +733,7 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
     const lpg_tank_details = body.lpg_tank_details !== undefined ? String(body.lpg_tank_details).trim() : null;
     const lpg_tank_type = body.lpg_tank_type !== undefined ? String(body.lpg_tank_type).trim() : null;
     const lpg_installation_type = body.lpg_installation_type !== undefined ? String(body.lpg_installation_type).trim() : null;
-    const notes = body.notes !== undefined ? String(body.notes).trim() : null;
+    const notes = body.notes !== undefined && body.notes !== null ? String(body.notes).trim() : null;
 
     const client = await pool.connect();
     try {
@@ -896,7 +766,7 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
         lpg_tank_details: row.lpg_tank_details,
         lpg_tank_type: row.lpg_tank_type,
         lpg_installation_type: row.lpg_installation_type,
-        notes: row.notes || '',
+        notes: row.notes || null,
         created_at: normalizeDbTimestampToIso(row.created_at)
       });
     } finally {
@@ -905,6 +775,79 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
   } catch (err) {
     console.warn('POST /api/tank-info failed:', err && err.message);
     res.status(500).json({ error: 'failed to save tank info' });
+  }
+});
+
+/* NEW: Sites endpoints (GET and POST)
+   GET /api/sites -> { count, rows } (each row: terminal_id, site, location, latitude, longitude, created_at)
+   POST /api/sites -> upsert by terminal_id and return saved row
+*/
+app.get('/api/sites', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    try {
+      const q = `SELECT terminal_id, site, location, latitude, longitude, created_at FROM tank_sites ORDER BY created_at DESC`;
+      const r = await client.query(q);
+      const rows = (r.rows || []).map(row => ({
+        terminal_id: row.terminal_id,
+        site: row.site,
+        location: row.location,
+        latitude: row.latitude === null || row.latitude === undefined ? null : Number(row.latitude),
+        longitude: row.longitude === null || row.longitude === undefined ? null : Number(row.longitude),
+        created_at: normalizeDbTimestampToIso(row.created_at)
+      }));
+      return res.json({ count: rows.length, rows });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/sites failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to fetch sites' });
+  }
+});
+
+app.post('/api/sites', express.json(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const terminalId = body.terminalId ? String(body.terminalId).trim() : null;
+    if (!terminalId) {
+      return res.status(400).json({ error: 'terminalId is required' });
+    }
+    const site = body.site !== undefined ? String(body.site).trim() : null;
+    const location = body.location !== undefined ? String(body.location).trim() : null;
+    const latitude = (body.latitude !== undefined && body.latitude !== null && body.latitude !== '') ? Number(body.latitude) : null;
+    const longitude = (body.longitude !== undefined && body.longitude !== null && body.longitude !== '') ? Number(body.longitude) : null;
+
+    const client = await pool.connect();
+    try {
+      const q = `
+        INSERT INTO tank_sites (terminal_id, site, location, latitude, longitude)
+        VALUES ($1,$2,$3,$4,$5)
+        ON CONFLICT (terminal_id) DO UPDATE SET
+          site = EXCLUDED.site,
+          location = EXCLUDED.location,
+          latitude = EXCLUDED.latitude,
+          longitude = EXCLUDED.longitude
+        RETURNING terminal_id, site, location, latitude, longitude, created_at;
+      `;
+      const params = [terminalId, site, location, latitude, longitude];
+      const r = await client.query(q, params);
+      const row = r.rows && r.rows[0] ? r.rows[0] : null;
+      if (!row) return res.status(500).json({ error: 'failed to save' });
+      return res.status(201).json({
+        terminal_id: row.terminal_id,
+        site: row.site,
+        location: row.location,
+        latitude: row.latitude === null || row.latitude === undefined ? null : Number(row.latitude),
+        longitude: row.longitude === null || row.longitude === undefined ? null : Number(row.longitude),
+        created_at: normalizeDbTimestampToIso(row.created_at)
+      });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('POST /api/sites failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to save site' });
   }
 });
 
