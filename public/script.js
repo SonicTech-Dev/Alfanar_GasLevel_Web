@@ -169,6 +169,38 @@ function parsePercent(valueStr) {
   return parseFloat(m[0]);
 }
 
+// parse a voltage-like string and return float (e.g. "3.531", "3,531 V")
+function parseVoltage(valueStr) {
+  if (valueStr == null) return null;
+  const s = String(valueStr).trim().replace(',', '.').replace(/V|v/g, '').trim();
+  const m = s.match(/-?\d+(\.\d+)?/);
+  if (!m) return null;
+  return parseFloat(m[0]);
+}
+
+// compute battery percent using linear mapping and rounding
+function computeBatteryPercent(voltage, vMin = 3.35, vMax = 3.55) {
+  if (voltage == null || isNaN(voltage)) return null;
+  const v = Number(voltage);
+  if (v <= vMin) return 0;
+  if (v >= vMax) return 100;
+  const pct = ((v - vMin) / (vMax - vMin)) * 100.0;
+  return Math.round(pct); // rounding per your preference
+}
+
+// set simple battery color on small dot element
+function setBatteryColor(pct, dotEl) {
+  if (!dotEl) return;
+  dotEl.classList.remove('status-green', 'status-orange', 'status-red');
+  if (pct == null || isNaN(pct)) {
+    dotEl.classList.add('status-red');
+    return;
+  }
+  if (pct >= 50) dotEl.classList.add('status-green');
+  else if (pct >= 20) dotEl.classList.add('status-orange');
+  else dotEl.classList.add('status-red');
+}
+
 // status logic: GREEN if 30-70 inclusive, ORANGE if <30, RED if >70
 function setStatusColor(valueNum, valueEl, dotEl) {
   // remove any previous status classes
@@ -238,6 +270,13 @@ function createCard(device) {
     <div class="meta">
       <div class="term-row admin-only" style="display:none;"><strong>Terminal ID:</strong> <span class="term">${escapeHtml(device.id)}</span></div>
       <div><strong>Timestamp:</strong> <span class="time">-</span></div>
+      <div class="battery-row" style="margin-top:8px;"><strong>Battery Level:</strong>
+        <span style="display:inline-flex;align-items:center;gap:8px;margin-left:8px;">
+          <div class="battery-dot status-red" aria-hidden="true" style="width:10px;height:10px;border-radius:50%;"></div>
+          <div class="battery-value muted">—</div>
+          <div class="battery-unit" style="color:var(--muted);margin-left:6px">%</div>
+        </span>
+      </div>
     </div>
     </div>
 
@@ -360,11 +399,25 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
   const timeEl = cardEl.querySelector('.time');
   const dotEl = cardEl.querySelector('.status-dot');
 
+  // battery UI elements
+  const batteryValueEl = cardEl.querySelector('.battery-value');
+  const batteryDotEl = cardEl.querySelector('.battery-dot');
+
   // UI state
   if (showSpinner) spinner.style.display = 'inline-block';
   errorWrap.style.display = 'none';
   valueEl.classList.add('skeleton', 'muted');
   valueEl.textContent = ' ';
+
+  // mark battery as loading (preserve previous if exists)
+  if (batteryValueEl) {
+    batteryValueEl.classList.add('muted');
+    batteryValueEl.textContent = device._lastBattery != null ? device._lastBattery : '—';
+  }
+  if (batteryDotEl) {
+    batteryDotEl.classList.remove('status-green','status-orange','status-red');
+    batteryDotEl.classList.add('status-red');
+  }
 
   try {
     const url = `/api/tank?terminalId=${encodeURIComponent(device.id)}`;
@@ -442,6 +495,56 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
   } finally {
     if (showSpinner) spinner.style.display = 'none';
     device._initialLoaded = true;
+  }
+
+  // Fetch battery (BATT variable) and update battery UI — non-fatal if it fails
+  try {
+    const battUrl = `/api/tank?terminalId=${encodeURIComponent(device.id)}&variable=BATT`;
+    const respB = await fetch(battUrl, { cache: 'no-store' });
+    if (!respB.ok) {
+      // keep previous displayed battery, mark muted
+      throw new Error('Battery read failed');
+    }
+    const jb = await respB.json();
+    // server may include a computed percent
+    let battPct = (jb && (jb.percent !== undefined && jb.percent !== null)) ? Number(jb.percent) : null;
+    const rawBatt = jb && jb.value ? jb.value : null;
+
+    // if server didn't send percent, try to compute client-side from raw BATT value
+    if (battPct == null) {
+      const v = parseVoltage(rawBatt);
+      battPct = computeBatteryPercent(v);
+    }
+
+    // Update battery UI
+    if (batteryValueEl) {
+      batteryValueEl.classList.remove('muted');
+      batteryValueEl.textContent = (battPct == null || isNaN(battPct)) ? (String(rawBatt || '—')) : String(battPct);
+    }
+    if (batteryDotEl) setBatteryColor(battPct, batteryDotEl);
+
+    // cache last battery
+    device._lastBattery = (battPct == null || isNaN(battPct)) ? (rawBatt != null ? String(rawBatt) : null) : String(battPct);
+  } catch (e) {
+    // keep previous battery if present, otherwise show muted dash
+    try {
+      const prevB = device._lastBattery;
+      if (prevB != null) {
+        if (batteryValueEl) {
+          batteryValueEl.textContent = prevB;
+          batteryValueEl.classList.add('muted');
+        }
+      } else {
+        if (batteryValueEl) {
+          batteryValueEl.textContent = '—';
+          batteryValueEl.classList.add('muted');
+        }
+      }
+      if (batteryDotEl) {
+        batteryDotEl.classList.remove('status-green','status-orange','status-red');
+        batteryDotEl.classList.add('status-red');
+      }
+    } catch (ignored) { /* ignore */ }
   }
 }
 

@@ -291,12 +291,13 @@ function normalizeDbTimestampToIso(val) {
 }
 
 /* New: perform a SOAP fetch and return a normalized reading object.
+   Accepts optional variableName (default 'LIVELLO').
    Returns:
    {
-     idVal, snVal, numericLevelVal, timestampVal, rawValue, timestampRaw
+     idVal, snVal, numericLevelVal, timestampVal, rawValue, timestampRaw, percent (for BATT if computed)
    }
 */
-async function getTankReading(terminalId) {
+async function getTankReading(terminalId, variableName = 'LIVELLO') {
   const soapBody = buildSoapBody(terminalId);
   const headers = { 'Content-Type': 'text/xml; charset=utf-8' };
   if (SOAP_ACTION) headers['SOAPAction'] = SOAP_ACTION;
@@ -324,15 +325,17 @@ async function getTankReading(terminalId) {
 
   const items = collectItems(parsed);
 
+  const desiredName = (variableName || 'LIVELLO').toString().trim().toUpperCase();
+
   const target = items.find(item => {
     const type = item && item['$'] && item['$']['xsi:type'];
     const name = item && (item['Name'] || item['name']);
     const nameText = nodeText(name) || '';
-    return type === 'ns1:InfoVariable' && nameText.trim().toUpperCase() === 'LIVELLO';
+    return type === 'ns1:InfoVariable' && nameText.trim().toUpperCase() === desiredName;
   });
 
   if (!target) {
-    const err = new Error('Device Offline or LIVELLO not found');
+    const err = new Error(`Device Offline or ${desiredName} not found`);
     err.status = 404;
     throw err;
   }
@@ -352,6 +355,25 @@ async function getTankReading(terminalId) {
   const snField = terminalTopName || extractField(target, ['SerialNumber','Serial','Name','NAME']);
   const numericValue = parseNumericValue(rawValue);
 
+  // If variable is BATT and numericValue present, compute a rounded percent using linear map 3.35->0, 3.55->100
+  let computedPercent = null;
+  try {
+    if (desiredName === 'BATT' && numericValue != null && !isNaN(numericValue)) {
+      const vMin = parseFloat(process.env.BATT_MIN_V || '3.35');
+      const vMax = parseFloat(process.env.BATT_MAX_V || '3.55');
+      if (!isNaN(vMin) && !isNaN(vMax) && vMax > vMin) {
+        if (numericValue <= vMin) computedPercent = 0;
+        else if (numericValue >= vMax) computedPercent = 100;
+        else {
+          const pct = ((numericValue - vMin) / (vMax - vMin)) * 100.0;
+          computedPercent = Math.round(pct); // rounding per preference
+        }
+      }
+    }
+  } catch (e) {
+    computedPercent = null;
+  }
+
   return {
     idVal: idField,
     snVal: snField,
@@ -359,6 +381,7 @@ async function getTankReading(terminalId) {
     timestampVal: timestampIso,
     rawValue,
     timestampRaw,
+    percent: computedPercent
   };
 }
 
@@ -562,15 +585,21 @@ app.get('/api/login-attempts', async (req, res) => {
 /* API endpoints (existing) */
 
 // Return a live reading for a single terminal (no DB write here).
-
+// Accepts optional `variable` query parameter (default: LIVELLO). When `variable=BATT`
+// the response will include a computed `percent` field (rounded) if a numeric voltage is available.
 app.get('/api/tank', async (req, res) => {
   try {
     const terminalId = req.query.terminalId;
     if (!terminalId) return res.status(400).json({ error: 'terminalId query parameter is required' });
 
+    const variable = req.query.variable ? String(req.query.variable).trim() : 'LIVELLO';
+
     try {
-      const reading = await getTankReading(terminalId);
-      return res.json({ value: reading.rawValue, timestamp: reading.timestampVal, id: reading.idVal, sn: reading.snVal });
+      const reading = await getTankReading(terminalId, variable);
+      const out = { value: reading.rawValue, timestamp: reading.timestampVal, id: reading.idVal, sn: reading.snVal };
+      // include percent if computed (used for BATT)
+      if (reading.percent !== undefined && reading.percent !== null) out.percent = reading.percent;
+      return res.json(out);
     } catch (err) {
       if (err && err.status === 404) return res.status(404).json({ error: 'Device Offline' });
       return res.status(502).json({ error: 'Failed to fetch SOAP data', message: err && err.message });
