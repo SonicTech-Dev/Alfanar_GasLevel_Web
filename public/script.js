@@ -1494,7 +1494,7 @@ function buildDeviceInfoModalHtml(uniqueId) {
   // dropdowns: lpg_tank_type, lpg_installation_type
   // add notes textarea at bottom-left
   // NEW: LPG Minimum Level and LPG Maximum Level inputs added
-  // NEW: Alarm E-mail input added
+  // NEW: Alarm E-mail input added (now supports multiple comma-separated addresses)
   return `
     <div class="history-panel" role="dialog" aria-modal="true" aria-label="Device Information">
       <div class="history-actions">
@@ -1564,9 +1564,9 @@ function buildDeviceInfoModalHtml(uniqueId) {
           <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Maximum Level (%)</label>
           <input id="device-info-max-${uniqueId}" class="graph-title-input" placeholder="Max % (0-100)" />
 
-          <!-- NEW: Alarm E-mail -->
-          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">Alarm E-mail</label>
-          <input id="device-info-email-${uniqueId}" class="graph-title-input" placeholder="alarm@example.com" />
+          <!-- NEW: Alarm E-mail (supports multiple, comma or semicolon separated) -->
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">Alarm E-mail(s)</label>
+          <input id="device-info-email-${uniqueId}" class="graph-title-input" placeholder="e.g. alarm@example.com, other@example.com" />
         </div>
       </div>
 
@@ -1707,6 +1707,17 @@ function showDeviceInfoModal(initialTerminalId) {
     let maxVal = maxInput && maxInput.value !== undefined && maxInput.value !== null && String(maxInput.value).trim() !== '' ? Number(maxInput.value) : null;
     if (maxVal !== null && isNaN(maxVal)) maxVal = null;
 
+    // Normalize alarm emails: accept comma or semicolon separated; validate basic structure client-side
+    let rawEmails = emailInput && emailInput.value ? String(emailInput.value).trim() : '';
+    let normalizedEmails = '';
+    if (rawEmails) {
+      const parts = rawEmails.split(/[;,]+/).map(s => s.trim()).filter(Boolean);
+      // Basic client-side email regex (simple)
+      const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const good = parts.filter(p => emailRe.test(p));
+      normalizedEmails = good.join(', ');
+    }
+
     const payload = {
       terminalId: tid,
       building_name: buildingInput.value || '',
@@ -1720,7 +1731,7 @@ function showDeviceInfoModal(initialTerminalId) {
       notes: notesInput.value || '',
       lpg_min_level: minVal,
       lpg_max_level: maxVal,
-      alarm_email: emailInput && emailInput.value ? String(emailInput.value).trim() : ''
+      alarm_email: normalizedEmails || ''
     };
     try {
       msgEl.style.color = 'var(--muted)';
@@ -1878,8 +1889,14 @@ function showTankInfoViewModal(terminalId) {
       modal.querySelector('#view-min-level').textContent = (info.lpg_min_level !== null && info.lpg_min_level !== undefined) ? String(info.lpg_min_level) + '%' : '—';
       modal.querySelector('#view-max-level').textContent = (info.lpg_max_level !== null && info.lpg_max_level !== undefined) ? String(info.lpg_max_level) + '%' : '—';
 
-      // NEW: alarm email display
-      modal.querySelector('#view-alarm-email').textContent = info.alarm_email ? info.alarm_email : '—';
+      // NEW: alarm email display - show multiple on separate lines for readability
+      const viewAlarmEl = modal.querySelector('#view-alarm-email');
+      if (info.alarm_email) {
+        const parts = String(info.alarm_email).split(/[;,]+/).map(s => s.trim()).filter(Boolean);
+        viewAlarmEl.innerHTML = parts.map(p => escapeHtml(p)).join('<br>');
+      } else {
+        viewAlarmEl.textContent = '—';
+      }
 
       msgEl.textContent = '';
     } catch (err) {

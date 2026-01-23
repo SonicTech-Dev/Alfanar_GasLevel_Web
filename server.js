@@ -924,13 +924,35 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
     const lpg_installation_type = body.lpg_installation_type !== undefined ? String(body.lpg_installation_type).trim() : null;
     const notes = body.notes !== undefined && body.notes !== null ? String(body.notes).trim() : null;
 
-    const alarm_email = body.alarm_email !== undefined && body.alarm_email !== null && String(body.alarm_email).trim() !== '' ? String(body.alarm_email).trim().slice(0, 254) : null;
-
     // Parse thresholds defensively: accept numeric or numeric-string; store null for invalid/empty
     let lpg_min_level = (body.lpg_min_level !== undefined && body.lpg_min_level !== null && body.lpg_min_level !== '') ? Number(body.lpg_min_level) : null;
     if (lpg_min_level !== null && isNaN(lpg_min_level)) lpg_min_level = null;
     let lpg_max_level = (body.lpg_max_level !== undefined && body.lpg_max_level !== null && body.lpg_max_level !== '') ? Number(body.lpg_max_level) : null;
     if (lpg_max_level !== null && isNaN(lpg_max_level)) lpg_max_level = null;
+
+    // Handle alarm_email: accept string or array; normalize to comma-separated list of valid addresses
+    let alarm_email = null;
+    if (body.alarm_email !== undefined && body.alarm_email !== null) {
+      let raw = '';
+      if (Array.isArray(body.alarm_email)) raw = body.alarm_email.join(',');
+      else raw = String(body.alarm_email);
+      // split on commas or semicolons, trim, dedupe
+      const parts = raw.split(/[;,]+/).map(s => s.trim()).filter(Boolean);
+      const valid = [];
+      // very small, permissive regex for emails
+      const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      for (const p of parts) {
+        if (emailRe.test(p) && !valid.includes(p)) valid.push(p);
+      }
+      if (valid.length) {
+        // store as comma-space separated string for readability
+        alarm_email = valid.join(', ');
+      } else {
+        alarm_email = null;
+      }
+    } else {
+      alarm_email = null;
+    }
 
     const client = await pool.connect();
     try {
