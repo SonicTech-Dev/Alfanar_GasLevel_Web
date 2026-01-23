@@ -84,6 +84,43 @@
   </header>
 
   <main class="container">
+    <!-- Template for tank cards (used by script.js). Includes Battery % and GSM % placeholder -->
+    <template id="tank-card-template">
+      <article class="tank-card" role="group" aria-label="Tank card">
+        <header class="tank-card-header">
+          <h3 class="tank-name">Site Name</h3>
+          <div class="tank-meta">
+            <!-- Battery line (existing apps often show battery percent here) -->
+            <div class="battery">
+              Battery: <span class="battery-percent">--%</span>
+            </div>
+
+            <!-- NEW: GSM RSSI percent (will be updated by script.js) -->
+            <div class="gsm" aria-hidden="false">
+              GSM: <span class="gsm-percent">--%</span>
+            </div>
+          </div>
+        </header>
+
+        <!-- Main content (level bar / percentage) -->
+        <div class="tank-body">
+          <div class="level">
+            <div class="level-percent">--%</div>
+            <!-- visual bar (script.js may populate width) -->
+            <div class="level-bar"><div class="level-bar-fill" style="width:0%"></div></div>
+          </div>
+
+          <div class="tank-actions">
+            <button class="btn view-history">History</button>
+          </div>
+        </div>
+
+        <footer class="tank-footer" style="font-size:12px;color:var(--muted);">
+          <div class="last-updated">Updated: --</div>
+        </footer>
+      </article>
+    </template>
+
     <!-- Grid of tank cards -->
     <section id="tanks" class="tanks-grid" aria-live="polite">
       <!-- Cards are generated dynamically by script.js -->

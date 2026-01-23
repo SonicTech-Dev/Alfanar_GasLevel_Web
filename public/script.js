@@ -188,6 +188,26 @@ function computeBatteryPercent(voltage, vMin = 3.35, vMax = 3.55) {
   return Math.round(pct); // rounding per your preference
 }
 
+// compute RSSI -> percent mapping (0..31 -> 0..100). Returns null for unknown/invalid.
+function computeRssiPercent(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (s === '') return null;
+  // Treat common "unknown" code 99 as N/A
+  if (/^99$/.test(s)) return null;
+  // Some APIs might return non-numeric; try to extract integer
+  const m = s.match(/-?\d+/);
+  if (!m) return null;
+  const r = parseInt(m[0], 10);
+  if (isNaN(r)) return null;
+  // Typical RSSI range for this device is 0..31 (higher is better). Clamp and convert.
+  const minR = 0;
+  const maxR = 31;
+  const clamped = Math.max(minR, Math.min(maxR, r));
+  const pct = Math.round((clamped / maxR) * 100);
+  return pct;
+}
+
 // set simple battery color on small dot element
 function setBatteryColor(pct, dotEl) {
   if (!dotEl) return;
@@ -275,6 +295,14 @@ function createCard(device) {
           <div class="battery-dot status-red" aria-hidden="true" style="width:10px;height:10px;border-radius:50%;"></div>
           <div class="battery-value muted">—</div>
           <div class="battery-unit" style="color:var(--muted);margin-left:6px">%</div>
+        </span>
+      </div>
+
+      <!-- NEW GSM row placed under Battery Level (updated every poll) -->
+      <div class="gsm-row" style="margin-top:6px;"><strong>GSM:</strong>
+        <span style="display:inline-flex;align-items:center;gap:8px;margin-left:8px;">
+          <div class="gsm-value muted">—</div>
+          <div class="gsm-unit" style="color:var(--muted);margin-left:6px">%</div>
         </span>
       </div>
     </div>
@@ -403,6 +431,9 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
   const batteryValueEl = cardEl.querySelector('.battery-value');
   const batteryDotEl = cardEl.querySelector('.battery-dot');
 
+  // GSM UI element
+  const gsmValueEl = cardEl.querySelector('.gsm-value');
+
   // UI state
   if (showSpinner) spinner.style.display = 'inline-block';
   errorWrap.style.display = 'none';
@@ -417,6 +448,12 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
   if (batteryDotEl) {
     batteryDotEl.classList.remove('status-green','status-orange','status-red');
     batteryDotEl.classList.add('status-red');
+  }
+
+  // mark GSM as loading (preserve previous if exists)
+  if (gsmValueEl) {
+    gsmValueEl.classList.add('muted');
+    gsmValueEl.textContent = device._lastGsm != null ? (String(device._lastGsm) + ( /^\d+$/.test(String(device._lastGsm)) ? '%' : '' )) : '—';
   }
 
   try {
@@ -543,6 +580,47 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
       if (batteryDotEl) {
         batteryDotEl.classList.remove('status-green','status-orange','status-red');
         batteryDotEl.classList.add('status-red');
+      }
+    } catch (ignored) { /* ignore */ }
+  }
+
+  // NEW: Fetch RSSI (GSM signal) and update GSM UI — non-fatal if it fails
+  try {
+    const rssiUrl = `/api/tank?terminalId=${encodeURIComponent(device.id)}&variable=RSSI`;
+    const respR = await fetch(rssiUrl, { cache: 'no-store' });
+    if (!respR.ok) {
+      throw new Error('RSSI read failed');
+    }
+    const jr = await respR.json();
+    const rawRssi = jr && (jr.value !== undefined && jr.value !== null) ? jr.value : null;
+
+    const gsmPct = computeRssiPercent(rawRssi); // null if unknown/invalid
+    // Update GSM UI: show percent when available, otherwise "N/A"
+    if (gsmValueEl) {
+      if (gsmPct == null || isNaN(gsmPct)) {
+        gsmValueEl.textContent = 'N/A';
+        gsmValueEl.classList.add('muted');
+      } else {
+        gsmValueEl.textContent = String(gsmPct) + '%';
+        gsmValueEl.classList.remove('muted');
+      }
+    }
+
+    // cache last GSM display (store percent number if available else null)
+    device._lastGsm = (gsmPct == null || isNaN(gsmPct)) ? (rawRssi != null ? String(rawRssi) : null) : String(gsmPct);
+  } catch (err) {
+    // On error, preserve previous gsm if available; otherwise show muted dash or 'N/A'
+    try {
+      if (gsmValueEl) {
+        if (device._lastGsm != null) {
+          // if last stored is numeric percent string, append '%'
+          const last = String(device._lastGsm);
+          gsmValueEl.textContent = /^\d+$/.test(last) ? (last + '%') : last;
+          gsmValueEl.classList.add('muted');
+        } else {
+          gsmValueEl.textContent = 'N/A';
+          gsmValueEl.classList.add('muted');
+        }
       }
     } catch (ignored) { /* ignore */ }
   }
@@ -1366,7 +1444,7 @@ async function fetchTankInfo(terminalId) {
   const resp = await fetch(url, { cache: 'no-store' });
   if (!resp.ok) {
     const j = await resp.json().catch(() => ({}));
-    throw new Error(j.error || resp.statusText || `HTTP ${resp.status}`);
+    throw new Error(j.error || resp.statusText || `HTTP ${resp}`);
   }
   return resp.json();
 }
@@ -1380,7 +1458,7 @@ async function saveTankInfo(payload) {
   });
   if (!resp.ok) {
     const j = await resp.json().catch(() => ({}));
-    throw new Error(j.error || resp.statusText || `HTTP ${resp.status}`);
+    throw new Error(j.error || resp.statusText || `HTTP ${resp}`);
   }
   return resp.json();
 }
