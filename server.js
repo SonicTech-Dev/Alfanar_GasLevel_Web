@@ -1,4 +1,3 @@
-contents=
 require('dotenv').config();
 
 const express = require('express');
@@ -6,6 +5,7 @@ const fetch = require('node-fetch'); // v2
 const { parseStringPromise } = require('xml2js');
 const { Pool } = require('pg');
 const path = require('path');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3007;
@@ -142,7 +142,12 @@ async function createTitlesTableIfNeeded() {
      - lpg_tank_details
      - lpg_tank_type
      - lpg_installation_type
-     - notes (TEXT)  <-- newly supported
+     - notes (TEXT)
+     - lpg_min_level (DOUBLE PRECISION)
+     - lpg_max_level (DOUBLE PRECISION)
+     - alarm_email (TEXT)                       <-- NEW
+     - last_min_alarm_sent_at (TIMESTAMPTZ)     <-- NEW
+     - last_max_alarm_sent_at (TIMESTAMPTZ)     <-- NEW
 */
 async function createTankInfoTableIfNeeded() {
   const createSql = `
@@ -158,6 +163,11 @@ async function createTankInfoTableIfNeeded() {
       lpg_tank_type TEXT,
       lpg_installation_type TEXT,
       notes TEXT,
+      lpg_min_level DOUBLE PRECISION,
+      lpg_max_level DOUBLE PRECISION,
+      alarm_email TEXT,
+      last_min_alarm_sent_at TIMESTAMPTZ,
+      last_max_alarm_sent_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS tank_info_terminal_idx ON tank_info (terminal_id);
@@ -401,6 +411,147 @@ async function insertReading(client, reading) {
   ]);
 }
 
+/* Email helper (nodemailer) */
+let transporter = null;
+if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+  try {
+    transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587', 10),
+      secure: (process.env.SMTP_SECURE === 'true') || false,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
+      }
+    });
+    // verify connection (non-blocking)
+    transporter.verify().then(() => console.log('SMTP transporter ready')).catch(() => {/* ignore verification errors at startup */});
+  } catch (e) {
+    console.warn('Failed to create SMTP transporter', e && e.message);
+    transporter = null;
+  }
+} else {
+  console.log('SMTP not configured; email alarms will be disabled until SMTP_* env vars are provided.');
+}
+
+async function sendAlarmEmail(to, subject, text, html) {
+  if (!transporter) throw new Error('SMTP transporter not configured');
+  if (!to) throw new Error('no recipient');
+  const from = process.env.ALARM_FROM_EMAIL || process.env.SMTP_USER;
+  const fromName = process.env.ALARM_FROM_NAME || 'Tank Alarms';
+  const mail = {
+    from: `"${fromName}" <${from}>`,
+    to,
+    subject,
+    text,
+    html
+  };
+  return transporter.sendMail(mail);
+}
+
+/* maybeSendAlarms: check tank_info for this terminal and send alarm emails if needed.
+   Uses same client passed to pollTerminalsAndSave to avoid extra connections.
+*/
+async function maybeSendAlarms(client, reading) {
+  try {
+    if (!reading || !reading.idVal) return;
+    const tid = String(reading.idVal);
+
+    // fetch tank_info for this terminal
+    const q = `
+      SELECT terminal_id, lpg_min_level, lpg_max_level, alarm_email, last_min_alarm_sent_at, last_max_alarm_sent_at
+      FROM tank_info WHERE terminal_id = $1 LIMIT 1
+    `;
+    const r = await client.query(q, [tid]);
+    if (!r.rows || r.rows.length === 0) return;
+    const info = r.rows[0];
+    const email = info.alarm_email ? String(info.alarm_email).trim() : null;
+    if (!email) return; // nothing to do
+
+    const val = (reading.numericLevelVal === null || reading.numericLevelVal === undefined) ? null : Number(reading.numericLevelVal);
+    if (val == null || isNaN(val)) return;
+
+    const now = new Date();
+    const throttleMinutes = Math.max(0, parseInt(process.env.ALARM_THROTTLE_MINUTES || '60', 10));
+
+    function shouldSend(lastSent) {
+      if (!lastSent) return true;
+      const last = new Date(lastSent);
+      if (isNaN(last.getTime())) return true;
+      return (now.getTime() - last.getTime()) >= (throttleMinutes * 60 * 1000);
+    }
+
+    const min = (info.lpg_min_level === null || info.lpg_min_level === undefined) ? null : Number(info.lpg_min_level);
+    const max = (info.lpg_max_level === null || info.lpg_max_level === undefined) ? null : Number(info.lpg_max_level);
+
+    // BELOW MIN
+    if (min !== null && !isNaN(min) && val < min) {
+      // send only if throttling allows
+      if (shouldSend(info.last_min_alarm_sent_at)) {
+        if (transporter) {
+          try {
+            const subject = `ALARM: Terminal ${tid} below minimum (${val}% < ${min}%)`;
+            const text = `Terminal ${tid} reported a level of ${val}%, which is below the configured minimum of ${min}%.\n\nTime: ${now.toISOString()}\n\nThis is an automated alarm.`;
+            await sendAlarmEmail(email, subject, text, `<p>${text.replace(/\n/g,'<br>')}</p>`);
+            // update last_min_alarm_sent_at
+            await client.query(`UPDATE tank_info SET last_min_alarm_sent_at = now() WHERE terminal_id = $1`, [tid]).catch(()=>{});
+          } catch (err) {
+            console.warn('Failed to send min alarm', err && err.message);
+          }
+        } else {
+          console.warn('Cannot send min alarm: SMTP not configured.');
+        }
+      }
+    }
+
+    // ABOVE MAX
+    if (max !== null && !isNaN(max) && val > max) {
+      if (shouldSend(info.last_max_alarm_sent_at)) {
+        if (transporter) {
+          try {
+            const subject = `ALARM: Terminal ${tid} above maximum (${val}% > ${max}%)`;
+            const text = `Terminal ${tid} reported a level of ${val}%, which is above the configured maximum of ${max}%.\n\nTime: ${now.toISOString()}\n\nThis is an automated alarm.`;
+            await sendAlarmEmail(email, subject, text, `<p>${text.replace(/\n/g,'<br>')}</p>`);
+            // update last_max_alarm_sent_at
+            await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = now() WHERE terminal_id = $1`, [tid]).catch(()=>{});
+          } catch (err) {
+            console.warn('Failed to send max alarm', err && err.message);
+          }
+        } else {
+          console.warn('Cannot send max alarm: SMTP not configured.');
+        }
+      }
+    }
+
+    // If the value is back in range, optionally clear last_* timestamps so future crossings trigger immediately.
+    // We'll clear only when value is strictly between min and max (if both defined). If only min or max defined,
+    // clear the opposite timestamp when inside bounds.
+    try {
+      let clearMin = false;
+      let clearMax = false;
+      if ((min !== null && !isNaN(min)) && (max !== null && !isNaN(max))) {
+        if (val >= min && val <= max) {
+          clearMin = true; clearMax = true;
+        }
+      } else if (min !== null && !isNaN(min) && (max === null || isNaN(max))) {
+        if (val >= min) clearMin = true;
+      } else if (max !== null && !isNaN(max) && (min === null || isNaN(min))) {
+        if (val <= max) clearMax = true;
+      }
+      if (clearMin) {
+        await client.query(`UPDATE tank_info SET last_min_alarm_sent_at = NULL WHERE terminal_id = $1`, [tid]).catch(()=>{});
+      }
+      if (clearMax) {
+        await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = NULL WHERE terminal_id = $1`, [tid]).catch(()=>{});
+      }
+    } catch (err) {
+      // non-fatal
+    }
+  } catch (err) {
+    console.warn('maybeSendAlarms error', err && err.message);
+  }
+}
+
 /* Poll a list of terminal IDs (from TERMINAL_IDS env var) and save their readings.
    Behavior:
    - TERMINAL_IDS should be a comma-separated list of terminal IDs (strings).
@@ -421,8 +572,11 @@ async function pollTerminalsAndSave() {
     for (const tid of terminalIds) {
       try {
         const reading = await getTankReading(tid);
+        // Insert reading
         await insertReading(client, reading);
         console.log(`Inserted reading for terminal ${reading.idVal} (sn=${reading.snVal})`);
+        // Possibly send alarms (uses same client)
+        await maybeSendAlarms(client, reading).catch(e => console.warn('Alarm check failed', e && e.message));
       } catch (err) {
         // Individual terminal failure should not stop others
         console.warn(`Failed to fetch/insert reading for terminal ${tid}:`, err && (err.message || err.status), err && err.detail ? `detail=${err.detail}` : '');
@@ -451,7 +605,7 @@ if (pollOnStartup) {
    NEW: Login attempt endpoints
    ------------------------- */
 
-// Helper to get client IP (respect x-forwarded-for if behind proxy)
+ // Helper to get client IP (respect x-forwarded-for if behind proxy)
 function getRequestIp(req) {
   const xf = req.headers['x-forwarded-for'];
   if (xf && typeof xf === 'string') {
@@ -700,7 +854,7 @@ app.get('/api/tank-info', async (req, res) => {
     const client = await pool.connect();
     try {
       if (terminalId) {
-        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, created_at FROM tank_info WHERE terminal_id = $1 LIMIT 1`;
+        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, created_at FROM tank_info WHERE terminal_id = $1 LIMIT 1`;
         const r = await client.query(q, [String(terminalId)]);
         if (!r.rows || r.rows.length === 0) {
           return res.status(404).json({ error: 'not found' });
@@ -717,10 +871,13 @@ app.get('/api/tank-info', async (req, res) => {
           lpg_tank_type: row.lpg_tank_type,
           lpg_installation_type: row.lpg_installation_type,
           notes: row.notes || null,
+          lpg_min_level: row.lpg_min_level === null || row.lpg_min_level === undefined ? null : Number(row.lpg_min_level),
+          lpg_max_level: row.lpg_max_level === null || row.lpg_max_level === undefined ? null : Number(row.lpg_max_level),
+          alarm_email: row.alarm_email || null,
           created_at: normalizeDbTimestampToIso(row.created_at)
         });
       } else {
-        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, created_at FROM tank_info ORDER BY created_at DESC`;
+        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, created_at FROM tank_info ORDER BY created_at DESC`;
         const r = await client.query(q);
         const rows = (r.rows || []).map(row => ({
           terminal_id: row.terminal_id,
@@ -733,6 +890,9 @@ app.get('/api/tank-info', async (req, res) => {
           lpg_tank_type: row.lpg_tank_type,
           lpg_installation_type: row.lpg_installation_type,
           notes: row.notes || null,
+          lpg_min_level: row.lpg_min_level === null || row.lpg_min_level === undefined ? null : Number(row.lpg_min_level),
+          lpg_max_level: row.lpg_max_level === null || row.lpg_max_level === undefined ? null : Number(row.lpg_max_level),
+          alarm_email: row.alarm_email || null,
           created_at: normalizeDbTimestampToIso(row.created_at)
         }));
         return res.json({ count: rows.length, rows });
@@ -764,11 +924,19 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
     const lpg_installation_type = body.lpg_installation_type !== undefined ? String(body.lpg_installation_type).trim() : null;
     const notes = body.notes !== undefined && body.notes !== null ? String(body.notes).trim() : null;
 
+    const alarm_email = body.alarm_email !== undefined && body.alarm_email !== null && String(body.alarm_email).trim() !== '' ? String(body.alarm_email).trim().slice(0, 254) : null;
+
+    // Parse thresholds defensively: accept numeric or numeric-string; store null for invalid/empty
+    let lpg_min_level = (body.lpg_min_level !== undefined && body.lpg_min_level !== null && body.lpg_min_level !== '') ? Number(body.lpg_min_level) : null;
+    if (lpg_min_level !== null && isNaN(lpg_min_level)) lpg_min_level = null;
+    let lpg_max_level = (body.lpg_max_level !== undefined && body.lpg_max_level !== null && body.lpg_max_level !== '') ? Number(body.lpg_max_level) : null;
+    if (lpg_max_level !== null && isNaN(lpg_max_level)) lpg_max_level = null;
+
     const client = await pool.connect();
     try {
       const q = `
-        INSERT INTO tank_info (terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        INSERT INTO tank_info (terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
         ON CONFLICT (terminal_id) DO UPDATE SET
           building_name = EXCLUDED.building_name,
           address = EXCLUDED.address,
@@ -778,10 +946,13 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
           lpg_tank_details = EXCLUDED.lpg_tank_details,
           lpg_tank_type = EXCLUDED.lpg_tank_type,
           lpg_installation_type = EXCLUDED.lpg_installation_type,
-          notes = EXCLUDED.notes
-        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, created_at;
+          notes = EXCLUDED.notes,
+          lpg_min_level = EXCLUDED.lpg_min_level,
+          lpg_max_level = EXCLUDED.lpg_max_level,
+          alarm_email = EXCLUDED.alarm_email
+        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, created_at;
       `;
-      const params = [terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes];
+      const params = [terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email];
       const r = await client.query(q, params);
       const row = r.rows && r.rows[0] ? r.rows[0] : null;
       if (!row) return res.status(500).json({ error: 'failed to save' });
@@ -796,6 +967,9 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
         lpg_tank_type: row.lpg_tank_type,
         lpg_installation_type: row.lpg_installation_type,
         notes: row.notes || null,
+        lpg_min_level: row.lpg_min_level === null || row.lpg_min_level === undefined ? null : Number(row.lpg_min_level),
+        lpg_max_level: row.lpg_max_level === null || row.lpg_max_level === undefined ? null : Number(row.lpg_max_level),
+        alarm_email: row.alarm_email || null,
         created_at: normalizeDbTimestampToIso(row.created_at)
       });
     } finally {

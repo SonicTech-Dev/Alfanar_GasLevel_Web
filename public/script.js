@@ -221,8 +221,9 @@ function setBatteryColor(pct, dotEl) {
   else dotEl.classList.add('status-red');
 }
 
-// status logic: GREEN if 30-70 inclusive, ORANGE if <30, RED if >70
-function setStatusColor(valueNum, valueEl, dotEl) {
+// status logic: NEW behavior per your spec
+// Signature changed to accept the device context (which may include lpg_min_level / lpg_max_level)
+function setStatusColor(valueNum, valueEl, dotEl, device) {
   // remove any previous status classes
   dotEl.classList.remove('status-green', 'status-orange', 'status-red');
   valueEl.classList.remove('muted');
@@ -234,6 +235,29 @@ function setStatusColor(valueNum, valueEl, dotEl) {
     return;
   }
 
+  // read thresholds from device if present
+  const min = (device && device.lpg_min_level !== undefined && device.lpg_min_level !== null) ? Number(device.lpg_min_level) : null;
+  const max = (device && device.lpg_max_level !== undefined && device.lpg_max_level !== null) ? Number(device.lpg_max_level) : null;
+
+  // If min is set and value is below min -> ALWAYS ORANGE
+  if (min !== null && !isNaN(min) && valueNum < min) {
+    dotEl.classList.add('status-orange');
+    return;
+  }
+
+  // If max is set and value is above max -> ALWAYS RED
+  if (max !== null && !isNaN(max) && valueNum > max) {
+    dotEl.classList.add('status-red');
+    return;
+  }
+
+  // If either threshold exists (and we haven't matched above/below), mark GREEN
+  if ((min !== null && !isNaN(min)) || (max !== null && !isNaN(max))) {
+    dotEl.classList.add('status-green');
+    return;
+  }
+
+  // Fallback: no thresholds defined for this device -> use legacy mapping
   if (valueNum >= 30 && valueNum <= 70) {
     dotEl.classList.add('status-green');
   } else if (valueNum < 30) {
@@ -243,8 +267,9 @@ function setStatusColor(valueNum, valueEl, dotEl) {
   }
 }
 
-// Update card DOM to show location/link/coords (called after devices updated)
-// NOTE: intentionally disabled — we remove the visual "Location:" row from each card.
+/* Update card DOM to show location/link/coords (called after devices updated)
+   NOTE: intentionally disabled — we remove the visual "Location:" row from each card.
+*/
 function updateCardLocationDisplay(device) {
   // Remove any existing location-row so it's never displayed.
   try {
@@ -503,7 +528,7 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
     device._lastValue = display;
     timeEl.textContent = timeFormatted;
 
-    setStatusColor(numeric, valueEl, dotEl);
+    setStatusColor(numeric, valueEl, dotEl, device);
 
     // hide error if any
     errorWrap.style.display = 'none';
@@ -1468,6 +1493,8 @@ function buildDeviceInfoModalHtml(uniqueId) {
   // building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details
   // dropdowns: lpg_tank_type, lpg_installation_type
   // add notes textarea at bottom-left
+  // NEW: LPG Minimum Level and LPG Maximum Level inputs added
+  // NEW: Alarm E-mail input added
   return `
     <div class="history-panel" role="dialog" aria-modal="true" aria-label="Device Information">
       <div class="history-actions">
@@ -1529,6 +1556,17 @@ function buildDeviceInfoModalHtml(uniqueId) {
             <option value="A/G">A/G</option>
             <option value="B/G">B/G</option>
           </select>
+
+          <!-- NEW: LPG thresholds -->
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Minimum Level (%)</label>
+          <input id="device-info-min-${uniqueId}" class="graph-title-input" placeholder="Min % (0-100)" />
+
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Maximum Level (%)</label>
+          <input id="device-info-max-${uniqueId}" class="graph-title-input" placeholder="Max % (0-100)" />
+
+          <!-- NEW: Alarm E-mail -->
+          <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">Alarm E-mail</label>
+          <input id="device-info-email-${uniqueId}" class="graph-title-input" placeholder="alarm@example.com" />
         </div>
       </div>
 
@@ -1559,6 +1597,13 @@ function showDeviceInfoModal(initialTerminalId) {
   const saveBtn = modal.querySelector('.device-info-save');
   const closeBtn = modal.querySelector('.history-close');
   const msgEl = modal.querySelector(`#device-info-msg-${unique}`);
+
+  // NEW threshold inputs
+  const minInput = modal.querySelector(`#device-info-min-${unique}`);
+  const maxInput = modal.querySelector(`#device-info-max-${unique}`);
+
+  // NEW alarm email input
+  const emailInput = modal.querySelector(`#device-info-email-${unique}`);
 
   // Populate device select with current devices
   selectEl.innerHTML = `<option value="">— choose device (optional) —</option>`;
@@ -1606,6 +1651,23 @@ function showDeviceInfoModal(initialTerminalId) {
       typeSelect.value = info.lpg_tank_type || '';
       installSelect.value = info.lpg_installation_type || '';
       notesInput.value = info.notes || '';
+
+      // populate new alarm email input
+      emailInput.value = info.alarm_email || '';
+
+      // Populate new threshold inputs
+      minInput.value = (info.lpg_min_level !== null && info.lpg_min_level !== undefined) ? String(info.lpg_min_level) : '';
+      maxInput.value = (info.lpg_max_level !== null && info.lpg_max_level !== undefined) ? String(info.lpg_max_level) : '';
+
+      // update in-memory device if exists
+      const dev = devices.find(d => String(d.id) === String(tid));
+      if (dev) {
+        dev._info = info;
+        dev.lpg_min_level = (info.lpg_min_level !== null && info.lpg_min_level !== undefined) ? Number(info.lpg_min_level) : null;
+        dev.lpg_max_level = (info.lpg_max_level !== null && info.lpg_max_level !== undefined) ? Number(info.lpg_max_level) : null;
+        dev.alarm_email = info.alarm_email || null;
+      }
+
       msgEl.textContent = 'Loaded existing info.';
       setTimeout(() => { msgEl.textContent = ''; }, 1600);
     } catch (err) {
@@ -1619,6 +1681,9 @@ function showDeviceInfoModal(initialTerminalId) {
       typeSelect.value = '';
       installSelect.value = '';
       notesInput.value = '';
+      emailInput.value = '';
+      minInput.value = '';
+      maxInput.value = '';
       if (err && /not found/i.test(err.message)) {
         msgEl.textContent = 'No saved info for that terminal yet.';
       } else {
@@ -1636,6 +1701,12 @@ function showDeviceInfoModal(initialTerminalId) {
       msgEl.style.color = '#ffdede';
       return;
     }
+    // parse thresholds defensively
+    let minVal = minInput && minInput.value !== undefined && minInput.value !== null && String(minInput.value).trim() !== '' ? Number(minInput.value) : null;
+    if (minVal !== null && isNaN(minVal)) minVal = null;
+    let maxVal = maxInput && maxInput.value !== undefined && maxInput.value !== null && String(maxInput.value).trim() !== '' ? Number(maxInput.value) : null;
+    if (maxVal !== null && isNaN(maxVal)) maxVal = null;
+
     const payload = {
       terminalId: tid,
       building_name: buildingInput.value || '',
@@ -1646,7 +1717,10 @@ function showDeviceInfoModal(initialTerminalId) {
       lpg_tank_details: detailsInput.value || '',
       lpg_tank_type: typeSelect.value || '',
       lpg_installation_type: installSelect.value || '',
-      notes: notesInput.value || ''
+      notes: notesInput.value || '',
+      lpg_min_level: minVal,
+      lpg_max_level: maxVal,
+      alarm_email: emailInput && emailInput.value ? String(emailInput.value).trim() : ''
     };
     try {
       msgEl.style.color = 'var(--muted)';
@@ -1656,6 +1730,9 @@ function showDeviceInfoModal(initialTerminalId) {
       const dev = devices.find(d => String(d.id) === String(saved.terminal_id));
       if (dev) {
         dev._info = saved;
+        dev.lpg_min_level = (saved.lpg_min_level !== null && saved.lpg_min_level !== undefined) ? Number(saved.lpg_min_level) : null;
+        dev.lpg_max_level = (saved.lpg_max_level !== null && saved.lpg_max_level !== undefined) ? Number(saved.lpg_max_level) : null;
+        dev.alarm_email = saved.alarm_email || null;
       }
       msgEl.style.color = '#22c55e';
       msgEl.textContent = 'Saved.';
@@ -1715,6 +1792,15 @@ function showTankInfoViewModal(terminalId) {
               <div id="view-client" style="font-size:14px;color:var(--text);"></div>
             </div>
           </div>
+
+          <!-- NEW: Min/Max display -->
+          <div style="margin-top:12px;">
+            <div style="font-size:13px;color:var(--muted);font-weight:700;">LPG Min Level</div>
+            <div id="view-min-level" style="font-size:14px;color:var(--text);"></div>
+
+            <div style="font-size:13px;color:var(--muted);margin-top:8px;font-weight:700;">LPG Max Level</div>
+            <div id="view-max-level" style="font-size:14px;color:var(--text);"></div>
+          </div>
         </div>
 
         <div style="background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:16px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
@@ -1733,6 +1819,11 @@ function showTankInfoViewModal(terminalId) {
               <div style="font-size:13px;color:var(--muted);font-weight:700;">Installation</div>
               <div id="view-install" style="font-size:14px;color:var(--text);"></div>
             </div>
+          </div>
+
+          <div style="margin-top:12px;">
+            <div style="font-size:13px;color:var(--muted);font-weight:700;">Alarm E-mail</div>
+            <div id="view-alarm-email" style="font-size:14px;color:var(--text);"></div>
           </div>
         </div>
 
@@ -1782,6 +1873,14 @@ function showTankInfoViewModal(terminalId) {
       modal.querySelector('#view-install').textContent = info.lpg_installation_type || '—';
       modal.querySelector('#view-notes').textContent = info.notes && String(info.notes).trim() ? info.notes : '(No additional notes)';
       modal.querySelector('#view-saved-at').textContent = info.created_at ? new Date(info.created_at).toLocaleString() : '—';
+
+      // NEW: min/max display
+      modal.querySelector('#view-min-level').textContent = (info.lpg_min_level !== null && info.lpg_min_level !== undefined) ? String(info.lpg_min_level) + '%' : '—';
+      modal.querySelector('#view-max-level').textContent = (info.lpg_max_level !== null && info.lpg_max_level !== undefined) ? String(info.lpg_max_level) + '%' : '—';
+
+      // NEW: alarm email display
+      modal.querySelector('#view-alarm-email').textContent = info.alarm_email ? info.alarm_email : '—';
+
       msgEl.textContent = '';
     } catch (err) {
       msgEl.textContent = 'No saved information for this terminal.';
@@ -1795,6 +1894,9 @@ function showTankInfoViewModal(terminalId) {
       modal.querySelector('#view-install').textContent = '—';
       modal.querySelector('#view-notes').textContent = '(No additional notes)';
       modal.querySelector('#view-saved-at').textContent = '—';
+      modal.querySelector('#view-min-level').textContent = '—';
+      modal.querySelector('#view-max-level').textContent = '—';
+      modal.querySelector('#view-alarm-email').textContent = '—';
     }
   })();
 }
@@ -2286,6 +2388,31 @@ async function init() {
     await loadTitles();
   } catch (e) {
     console.warn('Title/site load failed during init', e && e.message);
+  }
+
+  // NEW: attempt to fetch tank_info list so we have thresholds available for coloring immediately
+  try {
+    const tiResp = await fetch('/api/tank-info', { cache: 'no-store' });
+    if (tiResp.ok) {
+      const tiJson = await tiResp.json();
+      const rows = Array.isArray(tiJson.rows) ? tiJson.rows : [];
+      const infoMap = new Map(rows.map(r => [String(r.terminal_id), r]));
+      devices.forEach(d => {
+        const s = infoMap.get(String(d.id));
+        if (s) {
+          d.lpg_min_level = (s.lpg_min_level !== null && s.lpg_min_level !== undefined) ? Number(s.lpg_min_level) : null;
+          d.lpg_max_level = (s.lpg_max_level !== null && s.lpg_max_level !== undefined) ? Number(s.lpg_max_level) : null;
+          d.alarm_email = s.alarm_email || null;
+          d._info = s;
+        } else {
+          d.lpg_min_level = d.lpg_min_level || null;
+          d.lpg_max_level = d.lpg_max_level || null;
+          d.alarm_email = d.alarm_email || null;
+        }
+      });
+    }
+  } catch (e) {
+    console.warn('Failed to load tank info list during init', e && e.message);
   }
 
   // Restore any saved order
