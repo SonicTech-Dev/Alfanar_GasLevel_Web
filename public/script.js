@@ -327,7 +327,7 @@ function createCard(device) {
       <div class="gsm-row" style="margin-top:6px;"><strong>GSM:</strong>
         <span style="display:inline-flex;align-items:center;gap:8px;margin-left:8px;">
           <div class="gsm-value muted">—</div>
-          <div class="gsm-unit" style="color:var(--muted);margin-left:6px">%</div>
+          <div class="gsm-unit" style="color:var(--muted);margin-left:6px"></div>
         </span>
       </div>
     </div>
