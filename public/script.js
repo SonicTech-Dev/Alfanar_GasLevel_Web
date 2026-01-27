@@ -1,11 +1,11 @@
 // Devices to display — edit friendly names or IDs here
 let devices = [
-  { id: "230347", name: "Transmitter A — ZN000000099657" },
-  { id: "230344", name: "Transmitter B — ZN000000104508" },
-  { id: "230348", name: "Transmitter C — ZN000000103596" },
-  { id: "230345", name: "Transmitter D — ZN000000104344" },
-  { id: "230346", name: "Transmitter E — ZN000000104482" },
-  { id: "231927", name: "Transmitter F — ZN000000096233" }
+  { id: "230347", name: "Transmitter A" },
+  { id: "230344", name: "Transmitter B" },
+  { id: "230348", name: "Transmitter C" },
+  { id: "230345", name: "Transmitter D" },
+  { id: "230346", name: "Transmitter E" },
+  { id: "231927", name: "Transmitter F" }
 ];
 
 // Poll interval in milliseconds
@@ -810,7 +810,7 @@ async function fetchHistory(terminalId, limit = 2000) {
   const resp = await fetch(url, { cache: 'no-store' });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
-    throw new Error(err.error || resp.statusText || 'Failed to load history');
+    throw new Error(err.error || err.statusText || 'Failed to load history');
   }
   return resp.json();
 }
@@ -1511,10 +1511,10 @@ function buildDeviceInfoModalHtml(uniqueId) {
 
       <div style="display:flex;gap:12px;flex-wrap:wrap;">
         <div style="flex:1 1 320px;min-width:280px;">
-          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">Select Device (Terminal ID)</label>
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">Select Device (Serial Number)</label>
           <select id="device-info-select-${uniqueId}" class="graph-title-input" style="width:100%;"></select>
-          <div style="margin-top:8px;color:var(--muted);font-size:12px;">Or enter Terminal ID manually:</div>
-          <input id="device-info-terminal-${uniqueId}" class="graph-title-input" placeholder="Terminal ID" style="margin-top:6px;" />
+          <div style="margin-top:8px;color:var(--muted);font-size:12px;">Or enter Serial Number manually:</div>
+          <input id="device-info-terminal-${uniqueId}" class="graph-title-input" placeholder="Serial Number" style="margin-top:6px;" />
 
           <!-- NOTES textarea placed in bottom-left -->
           <label style="display:block;margin-top:12px;margin-bottom:6px;color:var(--muted);font-size:13px;">Notes</label>
@@ -1575,7 +1575,7 @@ function buildDeviceInfoModalHtml(uniqueId) {
   `;
 }
 
-function showDeviceInfoModal(initialTerminalId) {
+function showDeviceInfoModal(initialSerial) {
   const unique = 'did' + Date.now();
   const modal = document.createElement('div');
   modal.className = 'history-modal';
@@ -1584,7 +1584,7 @@ function showDeviceInfoModal(initialTerminalId) {
   document.body.classList.add('modal-open');
 
   const selectEl = modal.querySelector(`#device-info-select-${unique}`);
-  const terminalInput = modal.querySelector(`#device-info-terminal-${unique}`);
+  const terminalInput = modal.querySelector(`#device-info-terminal-${unique}`); // now used as Serial input
   const buildingInput = modal.querySelector(`#device-info-building-${unique}`);
   const addressInput = modal.querySelector(`#device-info-address-${unique}`);
   const afgInput = modal.querySelector(`#device-info-afg-${unique}`);
@@ -1605,14 +1605,57 @@ function showDeviceInfoModal(initialTerminalId) {
   // NEW alarm email input
   const emailInput = modal.querySelector(`#device-info-email-${unique}`);
 
-  // Populate device select with current devices
-  selectEl.innerHTML = `<option value="">— choose device (optional) —</option>`;
-  devices.forEach(dev => {
-    const opt = document.createElement('option');
-    opt.value = dev.id;
-    opt.textContent = `${dev.name} (${dev.id})`;
-    selectEl.appendChild(opt);
-  });
+  // Helper: resolve a serial number to the current/most-recent terminal id via server API
+  async function resolveTerminalIdFromSn(sn) {
+    if (!sn) return null;
+    try {
+      const resp = await fetch(`/api/tank-by-sn?sn=${encodeURIComponent(String(sn))}`, { cache: 'no-store' });
+      if (!resp.ok) {
+        return null;
+      }
+      const json = await resp.json();
+      return (json && json.terminal_id) ? String(json.terminal_id) : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // Populate device select with SNs retrieved from server (fall back to devices[] if API fails)
+  (async () => {
+    try {
+      selectEl.innerHTML = `<option value="">— choose device —</option>`;
+      const resp = await fetch('/api/tank-sns', { cache: 'no-store' });
+      if (resp.ok) {
+        const json = await resp.json();
+        const rows = Array.isArray(json.rows) ? json.rows : (Array.isArray(json) ? json : []);
+        for (const r of rows) {
+          const opt = document.createElement('option');
+          opt.value = r.sn || '';
+          // DO NOT expose the terminal id in the visible text. The server intentionally returns only sn here.
+          // Client will resolve the terminal id when needed via /api/tank-by-sn.
+          opt.textContent = r.sn ? `${r.sn}` : 'Unknown';
+          selectEl.appendChild(opt);
+        }
+      } else {
+        // fallback: use local devices array but prefer device.sn as value
+        devices.forEach(dev => {
+          const opt = document.createElement('option');
+          opt.value = dev.sn || '';
+          opt.textContent = dev.sn || dev.name;
+          selectEl.appendChild(opt);
+        });
+      }
+    } catch (err) {
+      // fallback default
+      selectEl.innerHTML = `<option value="">— choose device —</option>`;
+      devices.forEach(dev => {
+        const opt = document.createElement('option');
+        opt.value = dev.sn || '';
+        opt.textContent = dev.sn || dev.name;
+        selectEl.appendChild(opt);
+      });
+    }
+  })();
 
   function removeModal() {
     modal.remove();
@@ -1622,19 +1665,53 @@ function showDeviceInfoModal(initialTerminalId) {
   closeBtn.addEventListener('click', () => removeModal());
   modal.addEventListener('click', (e) => { if (e.target === modal) removeModal(); });
 
-  // When user picks a device from the select, populate terminal input and fetch existing info
+  // When user picks a device from the select, populate serial input and fetch existing info
   selectEl.addEventListener('change', async (e) => {
     const val = e.target.value;
     if (val) {
-      terminalInput.value = val;
-      await loadInfoForTerminal(val);
+      terminalInput.value = val; // show serial in input
+      // Resolve terminal id via API (we don't store terminal_id on the option)
+      const resolved = await resolveTerminalIdFromSn(val);
+      if (resolved) {
+        await loadInfoForTerminal(resolved);
+      } else {
+        msgEl.textContent = 'No terminal mapping found for that serial.';
+        setTimeout(() => { msgEl.textContent = ''; }, 2000);
+      }
     }
   });
 
   terminalInput.addEventListener('blur', async () => {
-    const tid = terminalInput.value && terminalInput.value.trim();
-    if (tid) {
-      await loadInfoForTerminal(tid);
+    const serial = terminalInput.value && terminalInput.value.trim();
+    if (serial) {
+      // Try to resolve serial -> terminal id
+      msgEl.textContent = 'Looking up terminal...';
+      const resolved = await resolveTerminalIdFromSn(serial);
+      if (resolved) {
+        // If possible, set the select to match this serial
+        try {
+          const optToSelect = Array.from(selectEl.options).find(o => o.value === serial);
+          if (optToSelect) selectEl.value = serial;
+        } catch (e) { /* ignore */ }
+        await loadInfoForTerminal(resolved);
+        msgEl.textContent = '';
+      } else {
+        // If nothing found, clear fields and show helpful message
+        msgEl.textContent = 'No terminal mapping found for that serial.';
+        buildingInput.value = '';
+        addressInput.value = '';
+        afgInput.value = '';
+        clientInput.value = '';
+        capacityInput.value = '';
+        detailsInput.value = '';
+        typeSelect.value = '';
+        installSelect.value = '';
+        notesInput.value = '';
+        emailInput.value = '';
+        minInput.value = '';
+        maxInput.value = '';
+        setTimeout(() => { msgEl.textContent = ''; }, 2200);
+      }
     }
   });
 
@@ -1695,12 +1772,23 @@ function showDeviceInfoModal(initialTerminalId) {
 
   saveBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    const tid = terminalInput.value && terminalInput.value.trim();
-    if (!tid) {
-      msgEl.textContent = 'Terminal ID is required.';
+    const serial = terminalInput.value && terminalInput.value.trim();
+    if (!serial) {
+      msgEl.textContent = 'Serial Number is required.';
       msgEl.style.color = '#ffdede';
       return;
     }
+
+    // Resolve serial to terminal id
+    msgEl.style.color = 'var(--muted)';
+    msgEl.textContent = 'Resolving serial…';
+    const resolvedTid = await resolveTerminalIdFromSn(serial);
+    if (!resolvedTid) {
+      msgEl.style.color = '#ffdede';
+      msgEl.textContent = 'Could not find terminal for that serial number.';
+      return;
+    }
+
     // parse thresholds defensively
     let minVal = minInput && minInput.value !== undefined && minInput.value !== null && String(minInput.value).trim() !== '' ? Number(minInput.value) : null;
     if (minVal !== null && isNaN(minVal)) minVal = null;
@@ -1719,7 +1807,7 @@ function showDeviceInfoModal(initialTerminalId) {
     }
 
     const payload = {
-      terminalId: tid,
+      terminalId: resolvedTid,
       building_name: buildingInput.value || '',
       address: addressInput.value || '',
       afg_bld_code: afgInput.value || '',
@@ -1754,12 +1842,21 @@ function showDeviceInfoModal(initialTerminalId) {
     }
   });
 
-  // If caller provided an initial terminalId, prefill and load
-  if (initialTerminalId) {
-    terminalInput.value = initialTerminalId;
-    // if present in select, set it
-    try { selectEl.value = initialTerminalId; } catch (e) { /* ignore */ }
-    setTimeout(() => loadInfoForTerminal(initialTerminalId), 120);
+  // If caller provided an initial serial, prefill and try to resolve & load
+  if (initialSerial) {
+    terminalInput.value = initialSerial;
+    // attempt to set select to this serial if possible later
+    setTimeout(async () => {
+      try {
+        // Try to set select value if option exists
+        const optToSelect = Array.from(selectEl.options).find(o => o.value === initialSerial);
+        if (optToSelect) selectEl.value = initialSerial;
+      } catch (e) { /* ignore */ }
+      const resolved = await resolveTerminalIdFromSn(initialSerial);
+      if (resolved) {
+        await loadInfoForTerminal(resolved);
+      }
+    }, 120);
   }
 }
 
@@ -1776,7 +1873,6 @@ function showTankInfoViewModal(terminalId) {
       <div class="history-actions" style="align-items:center;">
         <div style="display:flex;align-items:center;gap:12px;">
           <strong>Device Information</strong>
-          <div style="color:var(--muted);font-size:13px;">Terminal ID: ${escapeHtml(terminalId)}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           <div class="history-controls">
@@ -2369,7 +2465,7 @@ async function refreshSitesAndUpdateUI() {
     if (sel) {
       // Clear and rebuild options
       const val = sel.value;
-      sel.innerHTML = `<option value="">— choose device (optional) —</option>`;
+      sel.innerHTML = `<option value="">— choose device —</option>`;
       devices.forEach(dev => {
         const opt = document.createElement('option');
         opt.value = dev.id;
@@ -2501,7 +2597,7 @@ async function init() {
       // Populate admin device dropdown and wire up save button
       const deviceSelect = document.getElementById('admin-device-select');
       if (deviceSelect) {
-        deviceSelect.innerHTML = `<option value="">— choose device (optional) —</option>`;
+        deviceSelect.innerHTML = `<option value="">— choose device —</option>`;
         devices.forEach(dev => {
           const opt = document.createElement('option');
           opt.value = dev.id;

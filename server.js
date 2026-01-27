@@ -924,35 +924,13 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
     const lpg_installation_type = body.lpg_installation_type !== undefined ? String(body.lpg_installation_type).trim() : null;
     const notes = body.notes !== undefined && body.notes !== null ? String(body.notes).trim() : null;
 
+    const alarm_email = body.alarm_email !== undefined && body.alarm_email !== null && String(body.alarm_email).trim() !== '' ? String(body.alarm_email).trim().slice(0, 254) : null;
+
     // Parse thresholds defensively: accept numeric or numeric-string; store null for invalid/empty
     let lpg_min_level = (body.lpg_min_level !== undefined && body.lpg_min_level !== null && body.lpg_min_level !== '') ? Number(body.lpg_min_level) : null;
     if (lpg_min_level !== null && isNaN(lpg_min_level)) lpg_min_level = null;
     let lpg_max_level = (body.lpg_max_level !== undefined && body.lpg_max_level !== null && body.lpg_max_level !== '') ? Number(body.lpg_max_level) : null;
     if (lpg_max_level !== null && isNaN(lpg_max_level)) lpg_max_level = null;
-
-    // Handle alarm_email: accept string or array; normalize to comma-separated list of valid addresses
-    let alarm_email = null;
-    if (body.alarm_email !== undefined && body.alarm_email !== null) {
-      let raw = '';
-      if (Array.isArray(body.alarm_email)) raw = body.alarm_email.join(',');
-      else raw = String(body.alarm_email);
-      // split on commas or semicolons, trim, dedupe
-      const parts = raw.split(/[;,]+/).map(s => s.trim()).filter(Boolean);
-      const valid = [];
-      // very small, permissive regex for emails
-      const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      for (const p of parts) {
-        if (emailRe.test(p) && !valid.includes(p)) valid.push(p);
-      }
-      if (valid.length) {
-        // store as comma-space separated string for readability
-        alarm_email = valid.join(', ');
-      } else {
-        alarm_email = null;
-      }
-    } else {
-      alarm_email = null;
-    }
 
     const client = await pool.connect();
     try {
@@ -1073,6 +1051,69 @@ app.post('/api/sites', express.json(), async (req, res) => {
   } catch (err) {
     console.warn('POST /api/sites failed:', err && err.message);
     return res.status(500).json({ error: 'failed to save site' });
+  }
+});
+
+/* NEW: Provide serial numbers (SN) to clients and mapping SN -> terminal_id
+   GET /api/tank-sns -> returns { count, rows: [{ sn }, ... ] }
+   GET /api/tank-by-sn?sn=... -> returns { terminal_id, sn } or 404
+
+   NOTE: To avoid exposing terminal IDs in the dropdown label we return only the SN values
+         from /api/tank-sns; the client will resolve the terminal ID using /api/tank-by-sn when needed.
+*/
+app.get('/api/tank-sns', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    try {
+      // Use DISTINCT ON to pick the latest row for each SN.
+      // Return only the SN value so the UI does not display terminal IDs.
+      const q = `
+        SELECT DISTINCT ON (sn) sn
+        FROM tank_level
+        WHERE sn IS NOT NULL AND sn <> ''
+        ORDER BY sn, "current_timestamp" DESC
+      `;
+      const r = await client.query(q);
+      const rows = (r.rows || []).map(row => ({
+        sn: row.sn
+      }));
+      return res.json({ count: rows.length, rows });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/tank-sns failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to fetch tank serials' });
+  }
+});
+
+app.get('/api/tank-by-sn', async (req, res) => {
+  try {
+    const sn = req.query.sn ? String(req.query.sn).trim() : '';
+    if (!sn) return res.status(400).json({ error: 'sn query parameter is required' });
+
+    const client = await pool.connect();
+    try {
+      // Find the most recent entry for this SN to determine the terminal id
+      const q = `
+        SELECT id AS terminal_id, sn, "current_timestamp" AS ts
+        FROM tank_level
+        WHERE sn = $1
+        ORDER BY "current_timestamp" DESC
+        LIMIT 1
+      `;
+      const r = await client.query(q, [sn]);
+      if (!r.rows || r.rows.length === 0) {
+        return res.status(404).json({ error: 'not found' });
+      }
+      const row = r.rows[0];
+      return res.json({ terminal_id: row.terminal_id, sn: row.sn });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/tank-by-sn failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to fetch terminal by sn' });
   }
 });
 
