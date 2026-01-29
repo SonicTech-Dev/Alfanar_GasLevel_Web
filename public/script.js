@@ -1134,7 +1134,8 @@ function showHistoryModal(terminalId, terminalName) {
     exportDropdown.querySelector('.export-csv').addEventListener('click', () => {
       try {
         const title = readTitle();
-        const safe = sanitizeFilename(title) || `${terminalId}_history`;
+        // Do NOT use terminalId in fallback filename to avoid leaking IDs via downloads.
+        const safe = sanitizeFilename(title) || sanitizeFilename(terminalName) || 'tank_history';
         const filename = `${safe}.csv`;
         // currentRows already contains filtered rows (or default last N rows)
         downloadCSV(filename, currentRows, title);
@@ -1149,7 +1150,8 @@ function showHistoryModal(terminalId, terminalName) {
       try {
         if (!_activeChart) throw new Error('No chart available');
         const title = readTitle();
-        const safe = sanitizeFilename(title) || `${terminalId}_history`;
+        // Do NOT use terminalId in fallback filename to avoid leaking IDs via downloads.
+        const safe = sanitizeFilename(title) || sanitizeFilename(terminalName) || 'tank_history';
         const filename = `${safe}.pdf`;
         await exportPdfFromChart(_activeChart, filename, title);
       } catch (err) {
@@ -2296,7 +2298,6 @@ function showMapModal(terminalId, device) {
 
         const popupContent = `
           <div style="font-weight:700;margin-bottom:6px">${escapeHtml(device.title || device.name)}</div>
-          <div>Terminal ID: ${escapeHtml(terminalId)}</div>
           <div style="margin-top:6px">Lat/Lng: ${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
         `;
 
@@ -2390,7 +2391,8 @@ async function showAllDevicesMap() {
       const group = [];
       coords.forEach(c => {
         const marker = L.marker([c.lat, c.lng]).addTo(leafletMap);
-        marker.bindPopup(`<div style="font-weight:700">${escapeHtml(c.title)}</div><div>Terminal: ${escapeHtml(c.id)}</div>`);
+        // Do NOT include terminal id in the popup to avoid exposing IDs to users.
+        marker.bindPopup(`<div style="font-weight:700">${escapeHtml(c.title)}</div>`);
         marker.on('click', () => {
           const card = document.querySelector(`.tank-card[data-terminal="${c.id}"]`);
           if (card) {
