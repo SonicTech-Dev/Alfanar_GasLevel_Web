@@ -317,11 +317,12 @@ function createCard(device) {
       <div><strong>Timestamp:</strong> <span class="time">-</span></div>
       <div class="battery-row" style="margin-top:8px;"><strong>Battery Level:</strong>
         <span style="display:inline-flex;align-items:center;gap:8px;margin-left:8px;">
-          <div class="battery-dot status-red" aria-hidden="true" style="width:10px;height:10px;border-radius:50%;"></div>
+          <div class="battery-dot status-red" aria-hidden="true" style="width:18px;height:10px;border-radius:3px;"></div>
           <div class="battery-value muted">—</div>
           <div class="battery-unit" style="color:var(--muted);margin-left:6px">%</div>
         </span>
       </div>
+  // ...
 
       <!-- NEW GSM row placed under Battery Level (updated every poll) -->
       <div class="gsm-row" style="margin-top:6px;"><strong>GSM:</strong>

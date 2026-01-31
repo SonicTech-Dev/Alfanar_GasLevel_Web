@@ -743,21 +743,22 @@ select.graph-title-input {
   color: var(--muted);
 }
 
-/* small circular indicator next to the battery percent */
+/* small rectangular indicator next to the battery percent */
 .battery-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+  width: 18px;        /* wider than the old circle */
+  height: 10px;       /* slightly shorter height */
+  border-radius: 3px; /* slight rounding for a modern, rectangular look */
   flex: 0 0 auto;
-  box-shadow: 0 0 8px rgba(0,0,0,0.18) inset;
+  box-shadow: inset 0 -1px 0 rgba(0,0,0,0.15);
   border: 1px solid rgba(255,255,255,0.03);
   background: var(--red); /* default - updated by status-* classes */
+  transition: background-color 220ms ease, box-shadow 220ms ease, transform 180ms ease;
 }
 
 /* allow existing status color classes to style the dot */
-.battery-dot.status-green { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.22); }
-.battery-dot.status-orange { background: var(--orange); box-shadow: 0 0 6px rgba(245,158,11,0.18); }
-.battery-dot.status-red { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.16); }
+.battery-dot.status-green { background: var(--green); box-shadow: inset 0 -1px 0 rgba(0,0,0,0.06); }
+.battery-dot.status-orange { background: var(--orange); box-shadow: inset 0 -1px 0 rgba(0,0,0,0.06); }
+.battery-dot.status-red { background: var(--red); box-shadow: inset 0 -1px 0 rgba(0,0,0,0.06); }
 
 /* numeric battery percentage */
 .battery-value {
