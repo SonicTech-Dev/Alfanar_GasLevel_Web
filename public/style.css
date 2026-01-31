@@ -27,7 +27,10 @@ body{
   margin:0;
   font-family: Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
   color:var(--text);
-  background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 55%);
+  /* FIX: lock gradient to the viewport so translucent cards don't visually shift when scrolling */
+  background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
+  background-attachment: fixed;
+  background-size: cover;
   -webkit-font-smoothing:antialiased;
   -moz-osx-font-smoothing:grayscale;
   display:flex;
@@ -707,12 +710,7 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
 
 /* ==========================
    NEW: Select/option fixes
-   ==========================
-   Ensure native <select> dropdown text is visible:
-   - closed <select> (selected value) stays light (var(--text))
-   - opened native option list uses dark background so options don't blend with page background
-   - option text uses the app foreground color for readability inside the dark list
-*/
+   ========================== */
 select {
   /* closed select (the selected value shown in the control) should keep the app foreground */
   color: var(--text) !important;
@@ -732,7 +730,6 @@ select.graph-title-input {
 
 /* ==========================
    NEW: Battery UI styles
-   (styles for the Battery Level row added by script.js)
    ========================== */
 .battery-row {
   margin-top: 6px;
@@ -785,4 +782,165 @@ select.graph-title-input {
   .battery-value { font-size: 13px; min-width: 18px; }
   .battery-unit { font-size: 11px; }
   .battery-dot { width: 9px; height: 9px; }
+}
+
+/* ==========================
+   LEGEND UI (in-page block inside .container)
+   - Pure HTML + CSS implementation using <details>/<summary>
+   - No JavaScript required
+   ========================== */
+
+.legend-panel {
+  margin-bottom: 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.03);
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.01));
+  box-shadow: 0 18px 40px rgba(2,6,23,0.6);
+  overflow: hidden;
+}
+
+/* Remove default marker and reset summary */
+.legend-panel summary {
+  list-style: none;
+  cursor: pointer;
+  display: block;
+  padding: 18px 22px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  position: relative;
+  margin: 0;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+  background: transparent;
+}
+
+/* hide native marker for webkit */
+.legend-panel summary::-webkit-details-marker { display: none; }
+
+/* custom arrow top-right */
+.legend-panel summary::after {
+  content: "";
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  position: absolute;
+  right: 20px;
+  top: 50%;
+  transform: translateY(-50%) rotate(0deg);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'><path d='M6 9l6 6 6-6' stroke='%23aab6c6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: center;
+  transition: transform .22s ease;
+  opacity: 0.95;
+}
+
+/* rotate arrow when open */
+.legend-panel[open] summary::after {
+  transform: translateY(-50%) rotate(180deg);
+}
+
+/* content wrapper — animate open/close via max-height + opacity */
+.legend-content {
+  padding: 18px 22px;
+  color: var(--muted);
+  font-size: 14px;
+  background: transparent;
+  overflow: hidden;
+  max-height: 1000px;
+  opacity: 1;
+  transition: max-height .28s cubic-bezier(.2,.9,.2,1), opacity .18s ease;
+}
+
+/* collapsed state: details without [open] will still show summary only (handled by native <details>) */
+.legend-panel:not([open]) .legend-content {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* Sections inside legend */
+.legend-section {
+  margin-bottom: 18px;
+}
+.legend-section .legend-title {
+  font-size: 18px;
+  color: var(--muted);
+  font-weight:700;
+  margin-bottom: 12px;
+}
+
+/* grid for swatches and labels */
+.legend-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 34px;
+  align-items: center;
+}
+
+/* single swatch + label pair */
+.legend-item {
+  display:flex;
+  align-items:center;
+  gap:12px;
+  color:var(--muted);
+}
+
+/* Ensure the legend uses the exact same dot/pill visuals as the cards */
+.legend-item .status-dot {
+  /* status-dot is already 12x12 with correct shadow — ensure vertical centering */
+  display:inline-block;
+}
+.legend-item .battery-dot {
+  /* battery-dot is already 18x10 with correct shadow — ensure vertical centering */
+  display:inline-block;
+}
+
+/* label text */
+.legend-label {
+  font-size:16px;
+  color:var(--muted);
+  font-weight:600;
+}
+
+/* thin divider line similar to screenshot */
+.legend-divider {
+  height:1px;
+  background: rgba(255,255,255,0.02);
+  margin: 12px 0 18px 0;
+  border-radius:2px;
+}
+
+/* Icons row */
+.legend-icons {
+  display:flex;
+  gap:22px;
+  align-items:center;
+  padding-top:8px;
+  flex-wrap:wrap;
+}
+.legend-icon {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  color:var(--muted);
+  font-size:15px;
+  font-weight:600;
+}
+.legend-icon svg { width:18px; height:18px; fill:none; stroke:rgba(170,182,198,0.85); stroke-width:1.4; }
+
+/* small subtle rounding for the whole block */
+.legend-panel { border-radius: 12px; }
+
+/* Responsive adjustments */
+@media (max-width:900px) {
+  .legend-grid { grid-template-columns: repeat(2, minmax(0,1fr)); gap:12px 22px; }
+  .legend-content { padding:14px 16px; }
+  .legend-panel summary::after { right: 14px; }
+}
+@media (max-width:640px) {
+  .legend-grid { grid-template-columns: 1fr; gap:10px; }
+  .legend-icons { gap:12px; }
+  .legend-panel summary { font-size:18px; padding:12px 14px; }
+  .legend-content { padding:12px 14px; }
 }

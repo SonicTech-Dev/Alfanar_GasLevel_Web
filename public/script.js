@@ -322,7 +322,6 @@ function createCard(device) {
           <div class="battery-unit" style="color:var(--muted);margin-left:6px">%</div>
         </span>
       </div>
-  // ...
 
       <!-- NEW GSM row placed under Battery Level (updated every poll) -->
       <div class="gsm-row" style="margin-top:6px;"><strong>GSM:</strong>
@@ -331,7 +330,6 @@ function createCard(device) {
           <div class="gsm-unit" style="color:var(--muted);margin-left:6px"></div>
         </span>
       </div>
-    </div>
     </div>
 
     <div class="card-footer">
@@ -811,7 +809,7 @@ async function fetchHistory(terminalId, limit = 2000) {
   const resp = await fetch(url, { cache: 'no-store' });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
-    throw new Error(err.error || err.statusText || 'Failed to load history');
+    throw new Error(err.error || resp.statusText || 'Failed to load history');
   }
   return resp.json();
 }
