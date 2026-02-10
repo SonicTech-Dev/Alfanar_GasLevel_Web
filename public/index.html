@@ -80,6 +80,15 @@
         <h1>Tank Level</h1>
         <p class="subtitle">Real-time tank monitoring</p>
       </div>
+
+      <!-- View toggle placed to the right of brand/legend area -->
+      <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+        <!-- The toggle uses the existing .btn style but is visually muted to fit the header -->
+        <button id="toggle-view-btn" class="btn" type="button" aria-pressed="false" title="Toggle list/card view" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">
+          <span id="toggle-view-icon" aria-hidden="true">☰</span>
+          <span id="toggle-view-label" style="margin-left:8px;">List view</span>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -199,6 +208,11 @@
     <!-- Grid of tank cards -->
     <section id="tanks" class="tanks-grid" aria-live="polite">
       <!-- Cards are generated dynamically by script.js -->
+    </section>
+
+    <!-- NEW: list view container (hidden by default) -->
+    <section id="tanks-list" class="tanks-list" style="display:none;" aria-live="polite" aria-label="Tank list view">
+      <!-- populated by script.js when list view active -->
     </section>
 
     <div id="global-error" class="error" style="display:none;"></div>

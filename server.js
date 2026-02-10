@@ -7,6 +7,11 @@ const { Pool } = require('pg');
 const path = require('path');
 const nodemailer = require('nodemailer');
 
+// New deps for MQTT, ping and WebSocket
+const mqtt = require('mqtt');
+const ping = require('ping');
+const WebSocket = require('ws');
+
 const app = express();
 const PORT = process.env.PORT || 3007;
 
@@ -148,6 +153,8 @@ async function createTitlesTableIfNeeded() {
      - alarm_email (TEXT)                       <-- NEW
      - last_min_alarm_sent_at (TIMESTAMPTZ)     <-- NEW
      - last_max_alarm_sent_at (TIMESTAMPTZ)     <-- NEW
+     - project_code (TEXT)                      <-- NEW
+     - emirate (TEXT)                           <-- NEW
 */
 async function createTankInfoTableIfNeeded() {
   const createSql = `
@@ -168,6 +175,8 @@ async function createTankInfoTableIfNeeded() {
       alarm_email TEXT,
       last_min_alarm_sent_at TIMESTAMPTZ,
       last_max_alarm_sent_at TIMESTAMPTZ,
+      project_code TEXT,
+      emirate TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS tank_info_terminal_idx ON tank_info (terminal_id);
@@ -176,7 +185,7 @@ async function createTankInfoTableIfNeeded() {
     const client = await pool.connect();
     try {
       await client.query(createSql);
-      console.log('Ensured tank_info table exists');
+      console.log('Ensured tank_info table exists (schema includes project_code & emirate)');
     } finally {
       client.release();
     }
@@ -854,7 +863,7 @@ app.get('/api/tank-info', async (req, res) => {
     const client = await pool.connect();
     try {
       if (terminalId) {
-        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, created_at FROM tank_info WHERE terminal_id = $1 LIMIT 1`;
+        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate, created_at FROM tank_info WHERE terminal_id = $1 LIMIT 1`;
         const r = await client.query(q, [String(terminalId)]);
         if (!r.rows || r.rows.length === 0) {
           return res.status(404).json({ error: 'not found' });
@@ -874,10 +883,12 @@ app.get('/api/tank-info', async (req, res) => {
           lpg_min_level: row.lpg_min_level === null || row.lpg_min_level === undefined ? null : Number(row.lpg_min_level),
           lpg_max_level: row.lpg_max_level === null || row.lpg_max_level === undefined ? null : Number(row.lpg_max_level),
           alarm_email: row.alarm_email || null,
+          project_code: row.project_code || null,
+          emirate: row.emirate || null,
           created_at: normalizeDbTimestampToIso(row.created_at)
         });
       } else {
-        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, created_at FROM tank_info ORDER BY created_at DESC`;
+        const q = `SELECT terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate, created_at FROM tank_info ORDER BY created_at DESC`;
         const r = await client.query(q);
         const rows = (r.rows || []).map(row => ({
           terminal_id: row.terminal_id,
@@ -893,6 +904,8 @@ app.get('/api/tank-info', async (req, res) => {
           lpg_min_level: row.lpg_min_level === null || row.lpg_min_level === undefined ? null : Number(row.lpg_min_level),
           lpg_max_level: row.lpg_max_level === null || row.lpg_max_level === undefined ? null : Number(row.lpg_max_level),
           alarm_email: row.alarm_email || null,
+          project_code: row.project_code || null,
+          emirate: row.emirate || null,
           created_at: normalizeDbTimestampToIso(row.created_at)
         }));
         return res.json({ count: rows.length, rows });
@@ -932,11 +945,15 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
     let lpg_max_level = (body.lpg_max_level !== undefined && body.lpg_max_level !== null && body.lpg_max_level !== '') ? Number(body.lpg_max_level) : null;
     if (lpg_max_level !== null && isNaN(lpg_max_level)) lpg_max_level = null;
 
+    // NEW: project_code and emirate
+    const project_code = body.project_code !== undefined && body.project_code !== null && String(body.project_code).trim() !== '' ? String(body.project_code).trim().slice(0, 200) : null;
+    const emirate = body.emirate !== undefined && body.emirate !== null && String(body.emirate).trim() !== '' ? String(body.emirate).trim().slice(0, 80) : null;
+
     const client = await pool.connect();
     try {
       const q = `
-        INSERT INTO tank_info (terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        INSERT INTO tank_info (terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         ON CONFLICT (terminal_id) DO UPDATE SET
           building_name = EXCLUDED.building_name,
           address = EXCLUDED.address,
@@ -949,10 +966,12 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
           notes = EXCLUDED.notes,
           lpg_min_level = EXCLUDED.lpg_min_level,
           lpg_max_level = EXCLUDED.lpg_max_level,
-          alarm_email = EXCLUDED.alarm_email
-        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, created_at;
+          alarm_email = EXCLUDED.alarm_email,
+          project_code = EXCLUDED.project_code,
+          emirate = EXCLUDED.emirate
+        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate, created_at;
       `;
-      const params = [terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email];
+      const params = [terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate];
       const r = await client.query(q, params);
       const row = r.rows && r.rows[0] ? r.rows[0] : null;
       if (!row) return res.status(500).json({ error: 'failed to save' });
@@ -970,6 +989,8 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
         lpg_min_level: row.lpg_min_level === null || row.lpg_min_level === undefined ? null : Number(row.lpg_min_level),
         lpg_max_level: row.lpg_max_level === null || row.lpg_max_level === undefined ? null : Number(row.lpg_max_level),
         alarm_email: row.alarm_email || null,
+        project_code: row.project_code || null,
+        emirate: row.emirate || null,
         created_at: normalizeDbTimestampToIso(row.created_at)
       });
     } finally {
@@ -1125,13 +1146,249 @@ app.get('/internal/dbstatus', (req, res) => {
   res.json({ dbAvailable, lastDbError });
 });
 
+/* -------------------------
+   REAL-TIME DEVICE STATUS (MQTT + Ping + WebSocket)
+   - Subscribes to MQTT topic for the configured terminal (default 230346).
+   - Pings the provided VPN IP periodically to determine panel online/offline.
+   - Keeps in-memory deviceStatus map and broadcasts updates to WebSocket clients.
+   - Also exposes GET /api/device-status?terminalId=... for clients that prefer polling.
+*/
+
+/* Configuration (add to .env as requested):
+   MQTT_HOST (default 3.227.99.254)
+   MQTT_PORT (default 1883)
+   MQTT_TERMINAL_ID (default 230346)
+   MQTT_TOPIC_230346 (default BivicomData6)
+   PING_IP_230346 (default 10.0.0.47)
+   PING_INTERVAL_MS (default 10000)
+*/
+
+const MQTT_HOST = process.env.MQTT_HOST || '3.227.99.254';
+const MQTT_PORT = parseInt(process.env.MQTT_PORT || '1883', 10);
+const MQTT_TERMINAL_ID = process.env.MQTT_TERMINAL_ID || (process.env.MQTT_TERMINAL || '230346');
+const MQTT_TOPIC_230346 = process.env.MQTT_TOPIC_230346 || 'BivicomData6';
+
+const PING_IP_230346 = process.env.PING_IP_230346 || '10.0.0.47';
+const PING_INTERVAL = Math.max(1000, parseInt(process.env.PING_INTERVAL_MS || '10000', 10));
+
+const WS_PATH = process.env.WS_PATH || '/ws';
+
+// In-memory status map: terminalId -> { lel: number|null, lastLelAt: iso|null, panelOnline: boolean, lastPingAt: iso|null, topic }
+const deviceStatus = {};
+
+// Initialize entry for our main device
+deviceStatus[String(MQTT_TERMINAL_ID)] = {
+  terminal_id: String(MQTT_TERMINAL_ID),
+  lel: null,
+  lastLelAt: null,
+  panelOnline: false,
+  lastPingAt: null,
+  topic: MQTT_TOPIC_230346
+};
+
+// Helper: broadcast function (populated after ws server created)
+let wss = null;
+function broadcastStatusUpdate(payload) {
+  try {
+    const pkg = JSON.stringify(payload);
+    if (!wss) return;
+    wss.clients.forEach(client => {
+      if (client && client.readyState === WebSocket.OPEN) {
+        client.send(pkg);
+      }
+    });
+  } catch (e) {
+    // non-fatal
+  }
+}
+
+// MQTT client connect and subscription
+try {
+  const mqttUrl = `mqtt://${MQTT_HOST}:${MQTT_PORT}`;
+  const mqttClient = mqtt.connect(mqttUrl);
+
+  mqttClient.on('connect', () => {
+    console.log('MQTT: connected to', mqttUrl);
+    try {
+      mqttClient.subscribe(MQTT_TOPIC_230346, (err) => {
+        if (err) console.warn('MQTT subscribe error', err && err.message);
+        else console.log('MQTT: subscribed to', MQTT_TOPIC_230346);
+      });
+    } catch (e) {
+      console.warn('MQTT subscribe exception', e && e.message);
+    }
+  });
+
+  mqttClient.on('message', (topic, messageBuf) => {
+    try {
+      const raw = messageBuf.toString();
+      // Attempt to parse JSON first
+      let parsed = null;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        parsed = null;
+      }
+
+      let lelVal = null;
+
+      if (parsed && typeof parsed === 'object') {
+        // find any key named 'lel' case-insensitive
+        for (const k of Object.keys(parsed)) {
+          if (String(k).toLowerCase() === 'lel') {
+            lelVal = parseNumericValue(parsed[k]);
+            break;
+          }
+        }
+      } else {
+        // try to extract pattern like "LEL: 12.3" ignoring case
+        const m = raw.match(/lel\s*[:=]?\s*([0-9]+(?:[.,][0-9]+)?)/i);
+        if (m) {
+          lelVal = parseNumericValue(m[1]);
+        } else {
+          // As fallback, try to find any number in the message (not ideal but tolerant)
+          const m2 = raw.match(/([0-9]+(?:[.,][0-9]+)?)/);
+          if (m2) lelVal = parseNumericValue(m2[1]);
+        }
+      }
+
+      const tid = String(MQTT_TERMINAL_ID);
+      const prev = deviceStatus[tid] || {};
+      const nowIso = new Date().toISOString();
+      if (!deviceStatus[tid]) {
+        deviceStatus[tid] = { terminal_id: tid, lel: null, lastLelAt: null, panelOnline: false, lastPingAt: null, topic };
+      }
+      if (lelVal !== null && !isNaN(lelVal)) {
+        deviceStatus[tid].lel = Number(lelVal);
+        deviceStatus[tid].lastLelAt = nowIso;
+      } else {
+        // if we couldn't find a lel value, we do not overwrite existing numeric with null here
+      }
+
+      // Broadcast update for this terminal (include only relevant fields)
+      const payload = {
+        type: 'status_update',
+        terminal_id: tid,
+        lel: deviceStatus[tid].lel,
+        lastLelAt: deviceStatus[tid].lastLelAt,
+        panelOnline: deviceStatus[tid].panelOnline,
+        lastPingAt: deviceStatus[tid].lastPingAt,
+        topic: MQTT_TOPIC_230346
+      };
+      broadcastStatusUpdate(payload);
+    } catch (err) {
+      console.warn('MQTT message handling error', err && err.message);
+    }
+  });
+
+  mqttClient.on('error', (err) => {
+    console.warn('MQTT client error', err && err.message);
+  });
+
+} catch (e) {
+  console.warn('Failed to initialize MQTT client', e && e.message);
+}
+
+// Ping loop for configured IPs (only the one given for now)
+async function doPingLoop() {
+  const tid = String(MQTT_TERMINAL_ID);
+  const host = PING_IP_230346;
+  try {
+    const res = await ping.promise.probe(host, { timeout: 2 });
+    const was = deviceStatus[tid] && deviceStatus[tid].panelOnline;
+    const nowIso = new Date().toISOString();
+    if (!deviceStatus[tid]) deviceStatus[tid] = { terminal_id: tid, lel: null, lastLelAt: null, panelOnline: false, lastPingAt: null, topic: MQTT_TOPIC_230346 };
+    deviceStatus[tid].panelOnline = !!res.alive;
+    deviceStatus[tid].lastPingAt = nowIso;
+
+    // Broadcast only if changed OR include periodic heartbeat update (we'll broadcast each run to keep clients in sync)
+    const payload = {
+      type: 'status_update',
+      terminal_id: tid,
+      lel: deviceStatus[tid].lel,
+      lastLelAt: deviceStatus[tid].lastLelAt,
+      panelOnline: deviceStatus[tid].panelOnline,
+      lastPingAt: deviceStatus[tid].lastPingAt,
+      topic: MQTT_TOPIC_230346
+    };
+    broadcastStatusUpdate(payload);
+  } catch (err) {
+    console.warn('Ping error for', host, err && err.message);
+  }
+}
+// start ping interval
+setInterval(() => { doPingLoop().catch(()=>{}); }, PING_INTERVAL);
+// do an initial ping on startup
+doPingLoop().catch(()=>{});
+
+/* HTTP API to fetch device status for a terminal (polling fallback)
+   GET /api/device-status?terminalId=230346
+   returns { terminal_id, lel, lastLelAt, panelOnline, lastPingAt, topic }
+*/
+app.get('/api/device-status', (req, res) => {
+  try {
+    const tid = req.query.terminalId ? String(req.query.terminalId).trim() : '';
+    if (!tid) return res.status(400).json({ error: 'terminalId query parameter is required' });
+    const s = deviceStatus[tid];
+    if (!s) return res.status(404).json({ error: 'not found' });
+    return res.json({
+      terminal_id: s.terminal_id,
+      lel: s.lel === null || s.lel === undefined ? null : Number(s.lel),
+      lastLelAt: s.lastLelAt || null,
+      panelOnline: !!s.panelOnline,
+      lastPingAt: s.lastPingAt || null,
+      topic: s.topic || null
+    });
+  } catch (err) {
+    console.warn('GET /api/device-status failed', err && err.message);
+    return res.status(500).json({ error: 'failed to fetch device status' });
+  }
+});
+
+/* NEW: WebSocket setup
+   - We create a WS server bound to the same HTTP server to push updates to clients.
+*/
+
+// Start HTTP server once
 const server = app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
 
+// Set up WebSocket server using the same HTTP server
+try {
+  wss = new WebSocket.Server({ server, path: WS_PATH });
+  wss.on('connection', (socket, req) => {
+    // Send initial snapshot
+    try {
+      const snapshot = { type: 'init', payload: deviceStatus };
+      socket.send(JSON.stringify(snapshot));
+    } catch (e) { /* ignore */ }
+
+    socket.on('message', (msg) => {
+      // Currently no client-originated messages expected; but we can handle pings
+      try {
+        // optional: respond to ping or subscribe requests in future
+      } catch (e) { /* ignore */ }
+    });
+
+    socket.on('close', () => {
+      // nothing special for now
+    });
+  });
+
+  wss.on('error', (err) => {
+    console.warn('WebSocket server error', err && err.message);
+  });
+
+  console.log('WebSocket server initialized on path', WS_PATH);
+} catch (e) {
+  console.warn('Failed to initialize WebSocket server', e && e.message);
+}
+
 async function shutdown() {
   console.log('Shutting down server...');
   try { await server.close(); } catch (e) { /* ignore */ }
+  try { if (wss) { wss.close(); } } catch (e) { /* ignore */ }
   try { await pool.end(); } catch (e) { /* ignore */ }
   process.exit(0);
 }
