@@ -1188,20 +1188,29 @@ deviceStatus[String(MQTT_TERMINAL_ID)] = {
 
 // Helper: broadcast function (populated after ws server created)
 let wss = null;
+// --- replace existing broadcastStatusUpdate with this enhanced version ---
 function broadcastStatusUpdate(payload) {
   try {
     const pkg = JSON.stringify(payload);
-    if (!wss) return;
-    wss.clients.forEach(client => {
+    if (!wss) {
+      console.debug('[ws] broadcast skipped: wss not initialized', payload);
+      return;
+    }
+    const clients = Array.from(wss.clients || []);
+    console.debug('[ws] broadcasting payload to clients:', { clients: clients.length, payload });
+    clients.forEach(client => {
       if (client && client.readyState === WebSocket.OPEN) {
-        client.send(pkg);
+        try {
+          client.send(pkg);
+        } catch (sendErr) {
+          console.warn('[ws] failed to send to client', sendErr && sendErr.message);
+        }
       }
     });
   } catch (e) {
-    // non-fatal
+    console.warn('[ws] broadcastStatusUpdate error', e && e.message);
   }
 }
-
 // MQTT client connect and subscription
 try {
   const mqttUrl = `mqtt://${MQTT_HOST}:${MQTT_PORT}`;
@@ -1355,36 +1364,36 @@ const server = app.listen(PORT, () => {
 });
 
 // Set up WebSocket server using the same HTTP server
-try {
-  wss = new WebSocket.Server({ server, path: WS_PATH });
-  wss.on('connection', (socket, req) => {
-    // Send initial snapshot
+// --- inside WebSocket server setup, enhance connection handler logging ---
+wss = new WebSocket.Server({ server, path: WS_PATH });
+wss.on('connection', (socket, req) => {
+  const remote = (req && req.socket && req.socket.remoteAddress) ? req.socket.remoteAddress : 'unknown';
+  console.info('[ws] new connection from', remote);
+  // Send initial snapshot
+  try {
+    const snapshot = { type: 'init', payload: deviceStatus };
+    socket.send(JSON.stringify(snapshot), (err) => {
+      if (err) console.warn('[ws] send snapshot error to', remote, err && err.message);
+    });
+  } catch (e) { console.warn('[ws] send snapshot exception', e && e.message); }
+
+  socket.on('message', (msg) => {
+    // For debugging, show small messages from client (avoid logging large payloads)
     try {
-      const snapshot = { type: 'init', payload: deviceStatus };
-      socket.send(JSON.stringify(snapshot));
+      const sample = (typeof msg === 'string' && msg.length > 300) ? msg.slice(0, 300) + '…' : msg;
+      console.debug('[ws] message from', remote, sample);
+      // optional: parse and handle client pings in the future
     } catch (e) { /* ignore */ }
-
-    socket.on('message', (msg) => {
-      // Currently no client-originated messages expected; but we can handle pings
-      try {
-        // optional: respond to ping or subscribe requests in future
-      } catch (e) { /* ignore */ }
-    });
-
-    socket.on('close', () => {
-      // nothing special for now
-    });
   });
 
-  wss.on('error', (err) => {
-    console.warn('WebSocket server error', err && err.message);
+  socket.on('close', (code, reason) => {
+    console.info('[ws] client closed', remote, { code, reason: reason && reason.toString ? reason.toString() : reason });
   });
 
-  console.log('WebSocket server initialized on path', WS_PATH);
-} catch (e) {
-  console.warn('Failed to initialize WebSocket server', e && e.message);
-}
-
+  socket.on('error', (err) => {
+    console.warn('[ws] socket error from', remote, err && err.message);
+  });
+});
 async function shutdown() {
   console.log('Shutting down server...');
   try { await server.close(); } catch (e) { /* ignore */ }
