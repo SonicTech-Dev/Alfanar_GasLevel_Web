@@ -16,6 +16,17 @@ const tanksListContainer = document.getElementById('tanks-list');
 const globalErrorEl = document.getElementById('global-error');
 const ORDER_KEY = 'tank_order_v1';
 
+// Pagination for list view
+const LIST_PAGE_KEY = 'tank_list_page_v1';
+const PAGE_SIZE = 5; // show 5 devices per page
+let currentListPage = 1;
+
+// Try to restore saved page from localStorage
+try {
+  const savedPage = parseInt(localStorage.getItem(LIST_PAGE_KEY), 10);
+  if (!isNaN(savedPage) && savedPage >= 1) currentListPage = savedPage;
+} catch (e) { /* ignore */ }
+
 let selectedCard = null; // for keyboard-only reordering
 
 // Simple auth helper (in-memory flag set by the login modal during this page load)
@@ -2783,10 +2794,30 @@ function setupViewToggle() {
   });
 }
 
+// Set list page (clamped), persist and re-render list
+function setListPage(page) {
+  const total = getTotalPages();
+  const p = Math.max(1, Math.min(total, Number(page) || 1));
+  if (p === currentListPage) return;
+  currentListPage = p;
+  try { localStorage.setItem(LIST_PAGE_KEY, String(currentListPage)); } catch (e) { /* ignore */ }
+  renderListView();
+}
+
+function getTotalPages() {
+  return Math.max(1, Math.ceil(devices.length / PAGE_SIZE));
+}
+
 // Build the list table and populate it from devices[] and cached values
 function renderListView() {
   const container = document.getElementById('tanks-list');
   if (!container) return;
+
+  // Ensure page within range
+  const totalPages = getTotalPages();
+  if (currentListPage > totalPages) currentListPage = totalPages;
+  if (currentListPage < 1) currentListPage = 1;
+  try { localStorage.setItem(LIST_PAGE_KEY, String(currentListPage)); } catch (e) { /* ignore */ }
 
   // Build table header
   container.innerHTML = '';
@@ -2812,7 +2843,11 @@ function renderListView() {
 
   const tbody = document.createElement('tbody');
 
-  devices.forEach(device => {
+  // Determine slice for current page
+  const startIndex = (currentListPage - 1) * PAGE_SIZE;
+  const pageDevices = devices.slice(startIndex, startIndex + PAGE_SIZE);
+
+  pageDevices.forEach(device => {
     const tr = document.createElement('tr');
     tr.className = 'list-row';
     tr.dataset.terminal = device.id;
@@ -2866,6 +2901,25 @@ function renderListView() {
   table.appendChild(tbody);
   container.appendChild(table);
 
+  // Pagination controls — bottom-left
+  const paginationWrap = document.createElement('div');
+  paginationWrap.className = 'list-pagination';
+  paginationWrap.innerHTML = `
+    <div class="pagination-left">
+      <button class="pagination-btn pagination-prev" aria-label="Previous page" ${currentListPage <= 1 ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="pagination-info">Page <strong class="pagination-current">${currentListPage}</strong> of <strong class="pagination-total">${totalPages}</strong></div>
+      <button class="pagination-btn pagination-next" aria-label="Next page" ${currentListPage >= totalPages ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <div class="pagination-right" style="margin-left:auto;color:var(--muted);font-size:13px;">
+      <span>${devices.length} devices</span>
+    </div>
+  `;
+  container.appendChild(paginationWrap);
+
   // Attach action handlers for the list rows
   container.querySelectorAll('.list-info').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -2890,6 +2944,40 @@ function renderListView() {
       showMapModal(tid, dev);
     });
   });
+
+  // Pagination handlers
+  const prevBtn = paginationWrap.querySelector('.pagination-prev');
+  const nextBtn = paginationWrap.querySelector('.pagination-next');
+  const currentDisplay = paginationWrap.querySelector('.pagination-current');
+  const totalDisplay = paginationWrap.querySelector('.pagination-total');
+
+  function refreshPaginationUI() {
+    const total = getTotalPages();
+    currentDisplay.textContent = String(currentListPage);
+    totalDisplay.textContent = String(total);
+    if (prevBtn) prevBtn.disabled = currentListPage <= 1;
+    if (nextBtn) nextBtn.disabled = currentListPage >= total;
+  }
+
+  if (prevBtn) {
+    prevBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (currentListPage > 1) {
+        setListPage(currentListPage - 1);
+      }
+    });
+  }
+  if (nextBtn) {
+    nextBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const total = getTotalPages();
+      if (currentListPage < total) {
+        setListPage(currentListPage + 1);
+      }
+    });
+  }
+
+  refreshPaginationUI();
 }
 
 // Update an existing list row for a single device (keeps the list in sync with card updates)

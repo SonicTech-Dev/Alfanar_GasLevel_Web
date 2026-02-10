@@ -961,89 +961,71 @@ select.graph-title-input {
   border-collapse: collapse;
   font-size: 14px;
   color: var(--text);
-  table-layout: fixed; /* keeps columns aligned and professional */
 }
 
-/* Header styling - refined and professional */
 .list-table thead th {
   text-align: left;
   padding: 12px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
   color: var(--muted);
   font-weight: 700;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
-  font-size: 13px;
-  background: transparent;
 }
 
-/* Table body rows: clear separation lines and subtle hover */
 .list-table tbody tr.list-row {
-  background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.007));
-  border-bottom: 1px solid rgba(255,255,255,0.03); /* clear row separator */
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border: 1px solid rgba(255,255,255,0.03);
+  border-radius: 8px;
+  margin-bottom: 10px;
   display: table-row;
-  vertical-align: middle;
 }
 
 /* Table cells have padding to feel airy */
 .list-table td {
   padding: 12px 14px;
   vertical-align: middle;
-  border-top: none;
-  color: var(--muted); /* default muted color for values (matches Serial/Location) */
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border-top: 1px solid rgba(255,255,255,0.01);
 }
 
-/* Make sure the "project name" column stands out but still aligned */
+/* Project column - stronger weight */
 .list-project {
   font-weight: 700;
-  color: var(--text);
+  color: var(--muted);
   width: 28%;
   max-width: 360px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-/* Project code column (new) - same visual weight as serial/location */
+/* Ensure project-like fields (emirate, tank capacity, project code) use the muted color too.
+   Added with higher specificity and !important to override any other table-level color rules
+   that might make these cells appear brighter. */
+.list-table td.list-project,
+.list-table td.list-emirate,
+.list-table td.list-capacity,
+.list-table td.list-project-code,
+.list-project,
+.list-emirate,
+.list-capacity,
 .list-project-code {
-  color: var(--muted);
-  width: 12%;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--muted) !important;
 }
 
 /* Serial column */
 .list-serial {
   color: var(--muted);
   width: 12%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Emirate column (new) */
-.list-emirate {
-  color: var(--muted);
-  width: 12%;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Location column */
 .list-location {
   color: var(--muted);
   width: 20%;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Level column - contains a bar and percent label */
 .list-level {
-  width: 14%;
+  width: 25%;
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 160px;
 }
 
 /* Level bar wrapper */
@@ -1085,15 +1067,6 @@ select.graph-title-input {
   font-weight:700;
 }
 
-/* Tank capacity column (new) */
-.list-capacity {
-  width: 8%;
-  color: var(--muted);
-  text-align: right;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
 /* Actions column - compact buttons aligned right */
 .list-actions {
   width: 15%;
@@ -1114,27 +1087,84 @@ select.graph-title-input {
 }
 .list-actions .btn:hover { background: rgba(255,255,255,0.03); transform:none; }
 
-/* Hover state for rows (subtle) */
-.list-table tbody tr.list-row:hover td {
-  background: transparent;
-  background-color: rgba(255,255,255,0.012);
-  color: var(--text); /* make values slightly brighter on hover for focus */
-}
-
 /* Make rows visually separated on narrow screens */
 @media (max-width:900px) {
   .list-table thead { display: none; }
-  .list-table tbody tr.list-row { display: block; margin-bottom: 12px; border-bottom: none; }
+  .list-table tbody tr.list-row { display: block; margin-bottom: 12px; }
   .list-table td { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; }
   .list-project { width: 100%; order: 1; }
-  .list-project-code { width: 50%; order: 2; color:var(--muted); }
-  .list-serial { width: 50%; order: 3; color:var(--muted); }
-  .list-emirate { width: 100%; order: 4; }
-  .list-location { width: 100%; order: 5; }
-  .list-level { width: 100%; order: 6; }
-  .list-capacity { width: 100%; order: 7; text-align: left; }
-  .list-actions { width: 100%; order: 8; text-align:left; padding-bottom: 14px; }
+  .list-serial { width: 50%; order: 2; color:var(--muted); }
+  .list-location { width: 100%; order: 3; }
+  .list-level { width: 100%; order: 4; }
+  .list-actions { width: 100%; order: 5; text-align:left; padding-bottom: 14px; }
   .list-actions .btn { margin-left: 0; margin-right: 8px; }
+}
+
+/* ==========================
+   PAGINATION UI (bottom-left, professional)
+   ========================== */
+
+.list-pagination {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Left group holds prev/next and page numbers */
+.list-pagination .pagination-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Small, refined button style for pagination */
+.pagination-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 36px;
+  min-width: 36px;
+  padding: 0 10px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.01));
+  color: var(--text);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(2,6,23,0.35);
+  transition: transform .08s ease, box-shadow .08s ease, opacity .12s ease;
+}
+.pagination-btn:hover { transform: translateY(-2px); box-shadow: 0 12px 24px rgba(2,6,23,0.45); }
+.pagination-btn:disabled { opacity: 0.35; cursor: default; transform: none; box-shadow: none; }
+
+/* Page info pill */
+.pagination-info {
+  font-size: 13px;
+  color: var(--muted);
+  background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.008));
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.03);
+  box-shadow: 0 8px 20px rgba(2,6,23,0.28);
+  font-weight: 700;
+}
+.pagination-info strong { color: var(--text); font-weight:800; }
+
+/* Display total devices on the right within the pagination row */
+.list-pagination .pagination-right {
+  font-size: 13px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+}
+
+/* Responsive: stack controls on narrow screens */
+@media (max-width:640px) {
+  .list-pagination { flex-direction: column; align-items: flex-start; gap:8px; }
+  .list-pagination .pagination-right { margin-left: 0; }
 }
 
 /* ==========================
