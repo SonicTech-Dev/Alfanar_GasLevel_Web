@@ -3175,4 +3175,51 @@ async function init() {
             userDevInfoBtn.style.display = '';
             userDevInfoBtn.removeEventListener('click', userDevInfoBtn._boundHandler);
             userDevInfoBtn._boundHandler = (e) => { e.stopPropagation(); showDeviceInfoModal(); };
-            userDevInfoBtn.addEventListener
+            userDevInfoBtn.addEventListener('click', userDevInfoBtn._boundHandler);
+          } else {
+            userDevInfoBtn.style.display = 'none';
+          }
+        }
+      } else {
+        // hide for admins (they already have the admin menu)
+        userMenu.style.display = 'none';
+        userMenu.setAttribute('aria-hidden', 'true');
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to set user menu visibility', e && e.message);
+  }
+  // Ensure location displays are accurate (in case loaded after card creation)
+  devices.forEach(d => updateCardLocationDisplay(d));
+
+  // If list view selected, render it now so it reflects newly created cards / data
+  try {
+    const saved = localStorage.getItem(VIEW_KEY);
+    if (saved === 'list') renderListView();
+  } catch (e) { /* ignore */ }
+
+  // Polling: subsequent refreshes will NOT show the spinner (silent updates)
+  setInterval(refreshAll, POLL_INTERVAL_MS);
+}
+
+// Expose a named start function so the login script can call it after authentication
+window.appStart = init;
+
+// Always wait for the login event; the login modal shows on every page load.
+// When the login modal calls window.appStart() (after setting window._clientAuthenticated = true),
+// init() will run for this page load.
+const onLogin = function () {
+  if (window._app_started) return;
+  try { init(); } catch (e) { console.warn('Init after login failed', e); }
+  window.removeEventListener('app:login', onLogin);
+};
+window.addEventListener('app:login', onLogin);
+
+// --- IMPORTANT: ensure the view toggle is wired immediately so clicks always work ---
+try {
+  // This attaches the toggle early so the button works even before init() runs.
+  setupViewToggle();
+} catch (err) {
+  // Non-fatal; init() will attempt to set up again during init.
+  console.warn('Early setupViewToggle failed (will try again during init):', err && err.message);
+}
