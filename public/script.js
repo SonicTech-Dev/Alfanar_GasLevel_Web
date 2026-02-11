@@ -714,76 +714,18 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
   } catch (e) { /* ignore */ }
 }
 
-/* NEW: WebSocket client to receive server-pushed device status updates.
-   Server broadcasts messages of the form:
-     { type: 'init', payload: { terminalId: { ... }, ... } }
-     { type: 'status_update', terminal_id: '230346', lel: 12.3, panelOnline: true, lastLelAt: '...', lastPingAt: '...' }
+/* ---------------------------
+   Realtime via socket.io (replacement for the old ws-based IIFE)
+   --------------------------- */
+(function initRealtimeSocketIO() {
+  const WS_PATH = (typeof WS_PATH !== 'undefined' && WS_PATH) ? WS_PATH : '/ws';
+  let socket = null;
 
-   Client keeps device._realtime (object) updated and updates the mini-card display.
-*/
-(function initRealtime() {
-  const WS_PATH = '/ws';
-  const protocol = (location.protocol === 'https:') ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${location.host}${WS_PATH}`;
-  let ws = null;
-  let reconnectTimer = null;
-
-  function connect() {
-    try {
-      ws = new WebSocket(wsUrl);
-    } catch (e) {
-      scheduleReconnect();
-      return;
-    }
-
-    ws.addEventListener('open', () => {
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-      // console.log('Realtime WS connected');
-    });
-
-    ws.addEventListener('message', (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        if (!data) return;
-        if (data.type === 'init' && data.payload && typeof data.payload === 'object') {
-          const map = data.payload;
-          // map keys are terminal ids
-          Object.keys(map).forEach(tid => {
-            const st = map[tid];
-            applyStatusToDevice(tid, st);
-          });
-        } else if (data.type === 'status_update') {
-          const tid = String(data.terminal_id || data.terminalId || '');
-          if (!tid) return;
-          applyStatusToDevice(tid, data);
-        }
-      } catch (e) {
-        // ignore parse errors
-      }
-    });
-
-    ws.addEventListener('close', () => {
-      scheduleReconnect();
-    });
-    ws.addEventListener('error', () => {
-      try { ws.close(); } catch (e) { /* ignore */ }
-      scheduleReconnect();
-    });
-  }
-
-  function scheduleReconnect() {
-    if (reconnectTimer) return;
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connect();
-    }, 5000 + Math.random() * 2000);
-  }
-
+  // applyStatusToDevice copied/adapted from prior implementation (keeps DOM update logic the same)
   function applyStatusToDevice(terminalId, status) {
     try {
       const dev = devices.find(d => String(d.id) === String(terminalId));
       if (!dev) return;
-      // Persist into device object
       dev._realtime = dev._realtime || {};
       dev._realtime.lel = (status.lel === null || status.lel === undefined) ? null : Number(status.lel);
       dev._realtime.lastLelAt = status.lastLelAt || null;
@@ -792,8 +734,8 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
 
       // Update DOM if card present
       const card = document.querySelector(`.tank-card[data-terminal="${dev.id}"]`);
+      // Keep list updated as well
       if (!card) {
-        // list view may be active; update list row as well
         updateListRow(dev);
         return;
       }
@@ -806,9 +748,7 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
         if (dev._realtime.lel === null || isNaN(dev._realtime.lel)) {
           lelValueEl.textContent = 'N/A';
         } else {
-          // show integer or 1-decimal
           const v = Math.round(dev._realtime.lel * 10) / 10;
-          // If whole number, show without decimal
           lelValueEl.textContent = (v % 1 === 0) ? String(Math.round(v)) : String(v);
         }
       }
@@ -820,7 +760,6 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
         if (!dev._realtime.panelOnline) {
           lelDot.classList.add('status-red');
         } else if (lelNum == null || isNaN(lelNum)) {
-          // treat unknown as red (per spec)
           lelDot.classList.add('status-red');
         } else {
           if (Number(lelNum) < 25) lelDot.classList.add('status-green');
@@ -846,13 +785,182 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
     }
   }
 
-  // start
-  connect();
+  // Create socket.io connection (same origin by default). Use the configured WS_PATH.
+  try {
+    // `io` is provided by /socket.io/socket.io.js included in index.html
+    socket = io({ path: WS_PATH, transports: ['websocket'] });
 
-  // expose function for manual refresh if needed
+    socket.on('connect', () => {
+      // console.log('Realtime socket.io connected');
+    });
+
+    // Snapshot init (object of terminalId -> status)
+    socket.on('init', (payload) => {
+      try {
+        if (!payload || typeof payload !== 'object') return;
+        Object.keys(payload).forEach(tid => {
+          const st = payload[tid];
+          applyStatusToDevice(tid, st);
+        });
+      } catch (e) {
+        // ignore
+      }
+    });
+
+    // Individual updates (your server emits 'status_update' events)
+    // Helper: robust recursive extractor for numeric LEL from various payload shapes
+function extractLelFromPayload(obj) {
+  // try to parse numeric from common string shapes
+  const tryParseNumber = (v) => {
+    if (v == null) return null;
+    if (typeof v === 'number' && !isNaN(v)) return v;
+    const s = String(v).trim();
+    if (s === '') return null;
+
+    // prefer existing parseNumericValue if available
+    try {
+      if (typeof parseNumericValue === 'function') {
+        const p = parseNumericValue(s);
+        if (p != null) return p;
+      }
+    } catch (e) { /* ignore */ }
+
+    // direct numeric substring (e.g. "LEL: 12.3", "12.3%")
+    const m = s.match(/-?\d+(?:[.,]\d+)?/);
+    if (m) return parseFloat(m[0].replace(',', '.'));
+
+    return null;
+  };
+
+  // recursive walker that tries to find a number in object/array/string fields
+  const seen = new Set();
+  function walk(value) {
+    if (value == null) return null;
+
+    // primitive number or numeric-like string
+    const n = tryParseNumber(value);
+    if (n != null && !isNaN(n)) return n;
+
+    // try to parse string as JSON and walk it
+    if (typeof value === 'string') {
+      const s = value.trim();
+      if (s.startsWith('{') || s.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(s);
+          const r = walk(parsed);
+          if (r != null) return r;
+        } catch (e) {
+          // not JSON, ignore
+        }
+      }
+      return null;
+    }
+
+    if (typeof value === 'object') {
+      if (seen.has(value)) return null;
+      seen.add(value);
+
+      // check the most likely keys first
+      const priorityKeys = Object.keys(value).filter(k => /^(lel|LEL|level|Level|value|Value|msg|message|payload|data)$/i.test(k));
+      for (const k of priorityKeys) {
+        const r = walk(value[k]);
+        if (r != null) return r;
+      }
+
+      // otherwise, scan all keys
+      for (const k of Object.keys(value)) {
+        const r = walk(value[k]);
+        if (r != null) return r;
+      }
+
+      // arrays
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const r = walk(item);
+          if (r != null) return r;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  // first pass: recursive walk
+  const found = walk(obj);
+  if (found != null && !isNaN(found)) return Number(found);
+
+  // fallback: stringify and find first number
+  try {
+    const s = JSON.stringify(obj);
+    const m = s.match(/-?\d+(?:[.,]\d+)?/);
+    if (m) return parseFloat(m[0].replace(',', '.'));
+  } catch (e) { /* ignore */ }
+
+  return null;
+}
+
+// Tolerant status_update handler — normalizes payloads and extracts numeric LEL
+socket.on('status_update', (data) => {
+  try {
+    // TEMP DEBUG: log the raw payload so we can inspect real messages if parsing fails
+    // Leave this enabled for now — if payloads contain sensitive data you can remove later.
+    console.debug('[realtime] status_update received:', data);
+
+    // Normalize terminal id (accept several possible keys)
+    const tid = String(
+      data && (data.terminal_id || data.terminalId || data.id ||
+      (data.payload && data.payload.terminal_id) ||
+      (data.data && data.data.terminal_id) ) || ''
+    ).trim();
+    if (!tid) return;
+
+    // Build a flattened object for easier parsing
+    const normalized = Object.assign({}, data);
+    if (data && data.payload && typeof data.payload === 'object') Object.assign(normalized, data.payload);
+    if (data && data.data && typeof data.data === 'object') Object.assign(normalized, data.data);
+
+    // Prefer numeric `lel` if present and valid
+    let lelVal = null;
+    if (normalized.lel !== undefined && normalized.lel !== null && normalized.lel !== '') {
+      const n = Number(normalized.lel);
+      if (!isNaN(n)) lelVal = n;
+    }
+
+    // If not found, use robust extractor
+    if (lelVal === null) {
+      lelVal = extractLelFromPayload(normalized);
+    }
+
+    // Ensure payload passed to applyStatusToDevice has either numeric or null `lel`
+    const payloadForApply = Object.assign({}, normalized, { lel: (lelVal === null ? null : Number(lelVal)) });
+
+    applyStatusToDevice(tid, payloadForApply);
+  } catch (e) {
+    console.warn('Realtime status_update handler error', e && e.message);
+  }
+});
+
+    socket.on('disconnect', (reason) => {
+      // console.debug('Realtime socket disconnected', reason);
+    });
+
+    socket.on('connect_error', (err) => {
+      console.warn('Realtime connect_error', err && err.message);
+    });
+
+  } catch (err) {
+    console.warn('Realtime socket.io initialization failed', err && err.message);
+  }
+
+  // expose reconnect helper (keeps your existing window._realtimeReconnect usage)
   window._realtimeReconnect = () => {
-    try { if (ws) ws.close(); } catch (e) {}
-    scheduleReconnect();
+    try {
+      if (!socket) return;
+      if (socket.connected) {
+        try { socket.disconnect(); } catch (e) { /* ignore */ }
+      }
+      try { socket.connect(); } catch (e) { /* ignore */ }
+    } catch (e) { /* ignore */ }
   };
 })();
 

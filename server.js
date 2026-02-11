@@ -7,10 +7,11 @@ const { Pool } = require('pg');
 const path = require('path');
 const nodemailer = require('nodemailer');
 
-// New deps for MQTT, ping and WebSocket
+// New deps for MQTT, ping and socket.io
 const mqtt = require('mqtt');
 const ping = require('ping');
-const WebSocket = require('ws');
+// Replace raw ws with socket.io
+const { Server: SocketIO } = require('socket.io');
 
 const app = express();
 const PORT = process.env.PORT || 3007;
@@ -1147,10 +1148,10 @@ app.get('/internal/dbstatus', (req, res) => {
 });
 
 /* -------------------------
-   REAL-TIME DEVICE STATUS (MQTT + Ping + WebSocket)
+   REAL-TIME DEVICE STATUS (MQTT + Ping + socket.io)
    - Subscribes to MQTT topic for the configured terminal (default 230346).
    - Pings the provided VPN IP periodically to determine panel online/offline.
-   - Keeps in-memory deviceStatus map and broadcasts updates to WebSocket clients.
+   - Keeps in-memory deviceStatus map and broadcasts updates to Socket.IO clients.
    - Also exposes GET /api/device-status?terminalId=... for clients that prefer polling.
 */
 
@@ -1186,29 +1187,24 @@ deviceStatus[String(MQTT_TERMINAL_ID)] = {
   topic: MQTT_TOPIC_230346
 };
 
-// Helper: broadcast function (populated after ws server created)
-let wss = null;
-// --- replace existing broadcastStatusUpdate with this enhanced version ---
+// Helper: broadcast function (populated after socket.io server created)
+let io = null;
+// --- socket.io broadcastStatusUpdate ---
 function broadcastStatusUpdate(payload) {
   try {
-    const pkg = JSON.stringify(payload);
-    if (!wss) {
-      console.debug('[ws] broadcast skipped: wss not initialized', payload);
+    if (!io) {
+      console.debug('[io] broadcast skipped: io not initialized', payload);
       return;
     }
-    const clients = Array.from(wss.clients || []);
-    console.debug('[ws] broadcasting payload to clients:', { clients: clients.length, payload });
-    clients.forEach(client => {
-      if (client && client.readyState === WebSocket.OPEN) {
-        try {
-          client.send(pkg);
-        } catch (sendErr) {
-          console.warn('[ws] failed to send to client', sendErr && sendErr.message);
-        }
-      }
-    });
+    // Emit using event name present in payload.type or fallback to 'status_update'
+    if (payload && payload.type && typeof payload.type === 'string') {
+      io.emit(payload.type, payload);
+    } else {
+      io.emit('status_update', payload);
+    }
+    console.debug('[io] broadcasted:', payload && payload.type ? payload.type : 'status_update');
   } catch (e) {
-    console.warn('[ws] broadcastStatusUpdate error', e && e.message);
+    console.warn('[io] broadcastStatusUpdate error', e && e.message);
   }
 }
 // MQTT client connect and subscription
@@ -1354,8 +1350,8 @@ app.get('/api/device-status', (req, res) => {
   }
 });
 
-/* NEW: WebSocket setup
-   - We create a WS server bound to the same HTTP server to push updates to clients.
+/* NEW: socket.io setup
+   - We create a Socket.IO server bound to the same HTTP server to push updates to clients.
 */
 
 // Start HTTP server once
@@ -1363,41 +1359,50 @@ const server = app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
 
-// Set up WebSocket server using the same HTTP server
-// --- inside WebSocket server setup, enhance connection handler logging ---
-wss = new WebSocket.Server({ server, path: WS_PATH });
-wss.on('connection', (socket, req) => {
-  const remote = (req && req.socket && req.socket.remoteAddress) ? req.socket.remoteAddress : 'unknown';
-  console.info('[ws] new connection from', remote);
-  // Send initial snapshot
-  try {
-    const snapshot = { type: 'init', payload: deviceStatus };
-    socket.send(JSON.stringify(snapshot), (err) => {
-      if (err) console.warn('[ws] send snapshot error to', remote, err && err.message);
-    });
-  } catch (e) { console.warn('[ws] send snapshot exception', e && e.message); }
+// Initialize socket.io bound to the same HTTP server
+try {
+  io = new SocketIO(server, {
+    path: WS_PATH,
+    // optional CORS settings if your front-end is served from another origin:
+    // cors: { origin: '*' }
+  });
 
-  socket.on('message', (msg) => {
-    // For debugging, show small messages from client (avoid logging large payloads)
+  io.on('connection', (socket) => {
+    const remote = (socket && socket.handshake && socket.handshake.address) ? socket.handshake.address : (socket.conn && socket.conn.remoteAddress) ? socket.conn.remoteAddress : 'unknown';
+    console.info('[io] new connection from', remote);
+
+    // Send initial snapshot
     try {
-      const sample = (typeof msg === 'string' && msg.length > 300) ? msg.slice(0, 300) + '…' : msg;
-      console.debug('[ws] message from', remote, sample);
-      // optional: parse and handle client pings in the future
-    } catch (e) { /* ignore */ }
-  });
+      const snapshot = { type: 'init', payload: deviceStatus };
+      // send as 'init' event
+      socket.emit('init', deviceStatus);
+    } catch (e) { console.warn('[io] send snapshot exception', e && e.message); }
 
-  socket.on('close', (code, reason) => {
-    console.info('[ws] client closed', remote, { code, reason: reason && reason.toString ? reason.toString() : reason });
-  });
+    socket.on('message', (msg) => {
+      // For debugging, show small messages from client (avoid logging large payloads)
+      try {
+        const sample = (typeof msg === 'string' && msg.length > 300) ? msg.slice(0, 300) + '…' : msg;
+        console.debug('[io] message from', remote, sample);
+        // optional: parse and handle client pings in the future
+      } catch (e) { /* ignore */ }
+    });
 
-  socket.on('error', (err) => {
-    console.warn('[ws] socket error from', remote, err && err.message);
+    socket.on('disconnect', (reason) => {
+      console.info('[io] client disconnected', remote, reason);
+    });
+
+    socket.on('error', (err) => {
+      console.warn('[io] socket error from', remote, err && err.message);
+    });
   });
-});
+} catch (err) {
+  console.warn('Failed to initialize socket.io', err && err.message);
+}
+
 async function shutdown() {
   console.log('Shutting down server...');
   try { await server.close(); } catch (e) { /* ignore */ }
-  try { if (wss) { wss.close(); } } catch (e) { /* ignore */ }
+  try { if (io) { io.close(); } } catch (e) { /* ignore */ }
   try { await pool.end(); } catch (e) { /* ignore */ }
   process.exit(0);
 }
