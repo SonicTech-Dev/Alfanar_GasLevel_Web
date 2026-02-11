@@ -718,7 +718,7 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
    Realtime via socket.io (replacement for the old ws-based IIFE)
    --------------------------- */
 (function initRealtimeSocketIO() {
-  const WS_PATH = (typeof WS_PATH !== 'undefined' && WS_PATH) ? WS_PATH : '/ws';
+  const WS_PATH_CLIENT = (typeof globalThis !== 'undefined' && globalThis.WS_PATH) ? globalThis.WS_PATH : ((typeof window !== 'undefined' && window.WS_PATH) ? window.WS_PATH : '/ws');
   let socket = null;
 
   // applyStatusToDevice copied/adapted from prior implementation (keeps DOM update logic the same)
@@ -788,7 +788,7 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
   // Create socket.io connection (same origin by default). Use the configured WS_PATH.
   try {
     // `io` is provided by /socket.io/socket.io.js included in index.html
-    socket = io({ path: WS_PATH, transports: ['websocket'] });
+    socket = io({ path: WS_PATH_CLIENT, transports: ['websocket'] });
 
     socket.on('connect', () => {
       // console.log('Realtime socket.io connected');
@@ -810,32 +810,56 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
     // Individual updates (your server emits 'status_update' events)
     // Helper: robust recursive extractor for numeric LEL from various payload shapes
 function extractLelFromPayload(obj) {
-  // try to parse numeric from common string shapes
+  // Robust extractor that:
+  //  - prefers explicit keys like 'lel', 'level', 'value', 'msg', 'message'
+  //  - ignores obvious identifier keys (id, terminal, serial, sn, ts, timestamp, time, date)
+  //  - rejects implausibly large numbers (e.g. terminal IDs like 230346)
   const tryParseNumber = (v) => {
     if (v == null) return null;
-    if (typeof v === 'number' && !isNaN(v)) return v;
+    if (typeof v === 'number' && !isNaN(v)) {
+      const n = Number(v);
+      // reject implausibly large values (likely ids)
+      if (!isFinite(n) || Math.abs(n) > 1000) return null;
+      return n;
+    }
     const s = String(v).trim();
     if (s === '') return null;
 
-    // prefer existing parseNumericValue if available
+    // Fast-reject common non-numeric tokens
+    if (/^[A-Za-z]+$/.test(s)) return null;
+
+    // Prefer existing parseNumericValue if available
     try {
       if (typeof parseNumericValue === 'function') {
         const p = parseNumericValue(s);
-        if (p != null) return p;
+        if (p != null && !isNaN(p) && Math.abs(p) <= 1000) return p;
       }
-    } catch (e) { /* ignore */ }
+    } catch (e) { /* ignore and continue */ }
 
     // direct numeric substring (e.g. "LEL: 12.3", "12.3%")
     const m = s.match(/-?\d+(?:[.,]\d+)?/);
-    if (m) return parseFloat(m[0].replace(',', '.'));
+    if (m) {
+      const n = parseFloat(m[0].replace(',', '.'));
+      if (!isNaN(n) && Math.abs(n) <= 1000) return n;
+    }
 
     return null;
   };
 
-  // recursive walker that tries to find a number in object/array/string fields
+  // Walk the object recursively and try to find the best numeric candidate.
   const seen = new Set();
-  function walk(value) {
+  function walk(value, keyName) {
     if (value == null) return null;
+
+    // If the current key is clearly an identifier/terminal, skip using it as a numeric source.
+    if (keyName && /^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(String(keyName))) {
+      // but still traverse into the value if it's an object/array to find nested 'lel' keys
+      if (typeof value === 'object') {
+        // continue below to traverse children
+      } else {
+        return null;
+      }
+    }
 
     // primitive number or numeric-like string
     const n = tryParseNumber(value);
@@ -847,7 +871,7 @@ function extractLelFromPayload(obj) {
       if (s.startsWith('{') || s.startsWith('[')) {
         try {
           const parsed = JSON.parse(s);
-          const r = walk(parsed);
+          const r = walk(parsed, keyName);
           if (r != null) return r;
         } catch (e) {
           // not JSON, ignore
@@ -860,23 +884,35 @@ function extractLelFromPayload(obj) {
       if (seen.has(value)) return null;
       seen.add(value);
 
-      // check the most likely keys first
-      const priorityKeys = Object.keys(value).filter(k => /^(lel|LEL|level|Level|value|Value|msg|message|payload|data)$/i.test(k));
+      // check the most likely keys first (explicit names)
+      const keys = Object.keys(value || {});
+      const priorityKeys = keys.filter(k => /^(lel|level|value|msg|message)$/i.test(k));
       for (const k of priorityKeys) {
-        const r = walk(value[k]);
+        // Skip identifier-like keys even in priority (defensive)
+        if (/^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(k)) continue;
+        const r = walk(value[k], k);
         if (r != null) return r;
       }
 
-      // otherwise, scan all keys
-      for (const k of Object.keys(value)) {
-        const r = walk(value[k]);
+      // otherwise, scan other keys but skip identifier-like keys as numeric sources
+      for (const k of keys) {
+        if (/^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(k)) {
+          // still traverse into objects/arrays to find nested sensor fields, but do not treat the value at this key
+          const child = value[k];
+          if (typeof child === 'object') {
+            const r = walk(child, k);
+            if (r != null) return r;
+          }
+          continue;
+        }
+        const r = walk(value[k], k);
         if (r != null) return r;
       }
 
       // arrays
       if (Array.isArray(value)) {
         for (const item of value) {
-          const r = walk(item);
+          const r = walk(item, keyName);
           if (r != null) return r;
         }
       }
@@ -886,14 +922,17 @@ function extractLelFromPayload(obj) {
   }
 
   // first pass: recursive walk
-  const found = walk(obj);
+  const found = walk(obj, null);
   if (found != null && !isNaN(found)) return Number(found);
 
-  // fallback: stringify and find first number
+  // fallback: stringify and find first reasonable number (but still reject huge numbers)
   try {
     const s = JSON.stringify(obj);
     const m = s.match(/-?\d+(?:[.,]\d+)?/);
-    if (m) return parseFloat(m[0].replace(',', '.'));
+    if (m) {
+      const n = parseFloat(m[0].replace(',', '.'));
+      if (!isNaN(n) && Math.abs(n) <= 1000) return n;
+    }
   } catch (e) { /* ignore */ }
 
   return null;
