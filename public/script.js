@@ -421,8 +421,9 @@ function createCard(device) {
         <div style="font-size:12px;color:var(--muted);">LEL</div>
         <div style="font-weight:700;color:var(--text);"><span class="lel-value">--</span>%</div>
       </div>
-      <div class="mini-item mini-lel-dot" aria-hidden="false" style="flex:1;display:flex;justify-content:center;align-items:center;">
+      <div class="mini-item mini-lel-dot" aria-hidden="false" style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;">
         <span class="status-dot status-red" aria-hidden="true" title="LEL status" style="width:14px;height:14px;border-radius:50%;"></span>
+        <div class="lel-dot-label" style="font-size:12px;color:var(--muted);margin-top:6px;">Solenoid Off</div>
       </div>
       <div class="mini-item mini-panel-status" aria-label="Panel status" style="flex:1;display:flex;justify-content:flex-end;align-items:center;">
         <div class="panel-status-text" style="font-weight:700;color:var(--red);">Panel Offline</div>
@@ -741,6 +742,7 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
       }
       const lelValueEl = card.querySelector('.lel-value');
       const lelDot = card.querySelector('.mini-lel-dot .status-dot');
+      const lelLabelEl = card.querySelector('.mini-lel-dot .lel-dot-label');
       const panelTextEl = card.querySelector('.panel-status-text');
 
       // Left side: LEL% number
@@ -753,17 +755,36 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
         }
       }
 
-      // Middle: dot (green if LEL < 25 AND panelOnline true; else red)
+      // Middle: dot (COLOR AND LABEL DETERMINED SOLELY BY LEL VALUE)
+      // New behavior: independent of panelOnline. If LEL > 25 => RED + "Solenoid On" (red).
+      // Otherwise => GREEN + "Solenoid Off" (green). Unknown/missing LEL => mark red and "Solenoid Off" muted.
       if (lelDot) {
         lelDot.classList.remove('status-green', 'status-red');
         const lelNum = dev._realtime.lel;
-        if (!dev._realtime.panelOnline) {
+
+        if (lelNum == null || isNaN(lelNum)) {
+          // Unknown: show red dot (indicates attention) and muted label
           lelDot.classList.add('status-red');
-        } else if (lelNum == null || isNaN(lelNum)) {
-          lelDot.classList.add('status-red');
+          if (lelLabelEl) {
+            lelLabelEl.textContent = 'Solenoid Off';
+            lelLabelEl.style.color = (getComputedStyle(document.documentElement).getPropertyValue('--muted') || '#9ca3af');
+          }
         } else {
-          if (Number(lelNum) < 25) lelDot.classList.add('status-green');
-          else lelDot.classList.add('status-red');
+          if (Number(lelNum) > 25) {
+            // Above threshold: RED + Solenoid On (red)
+            lelDot.classList.add('status-red');
+            if (lelLabelEl) {
+              lelLabelEl.textContent = 'Solenoid On';
+              lelLabelEl.style.color = (getComputedStyle(document.documentElement).getPropertyValue('--red') || '#ef4444');
+            }
+          } else {
+            // At or below threshold: GREEN + Solenoid Off (green)
+            lelDot.classList.add('status-green');
+            if (lelLabelEl) {
+              lelLabelEl.textContent = 'Solenoid Off';
+              lelLabelEl.style.color = (getComputedStyle(document.documentElement).getPropertyValue('--green') || '#22c55e');
+            }
+          }
         }
       }
 
