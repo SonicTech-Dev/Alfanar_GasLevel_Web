@@ -1224,9 +1224,12 @@ try {
     }
   });
 
+// --- REPLACE the mqttClient.on('message', ...) handler with the following block ---
+
   mqttClient.on('message', (topic, messageBuf) => {
     try {
       const raw = messageBuf.toString();
+
       // Attempt to parse JSON first
       let parsed = null;
       try {
@@ -1235,39 +1238,70 @@ try {
         parsed = null;
       }
 
+      // Robust recursive extractor for keys like 'lel' (case-insensitive)
+      function findNumericByKey(obj, keys = ['lel', 'level', 'lvl', 'value']) {
+        if (obj == null) return null;
+        if (typeof obj !== 'object') return null;
+        for (const k of Object.keys(obj)) {
+          try {
+            if (keys.includes(String(k).toLowerCase())) {
+              const candidate = obj[k];
+              const n = parseNumericValue(candidate);
+              if (n != null && !isNaN(n)) return n;
+            }
+          } catch (e) { /* ignore per-key errors */ }
+        }
+        // Traverse children
+        for (const v of Object.values(obj)) {
+          if (v && typeof v === 'object') {
+            const found = findNumericByKey(v, keys);
+            if (found != null && !isNaN(found)) return found;
+          }
+        }
+        return null;
+      }
+
       let lelVal = null;
 
       if (parsed && typeof parsed === 'object') {
-        // find any key named 'lel' case-insensitive
-        for (const k of Object.keys(parsed)) {
-          if (String(k).toLowerCase() === 'lel') {
-            lelVal = parseNumericValue(parsed[k]);
-            break;
-          }
-        }
-      } else {
-        // try to extract pattern like "LEL: 12.3" ignoring case
-        const m = raw.match(/lel\s*[:=]?\s*([0-9]+(?:[.,][0-9]+)?)/i);
+        // First try recursive key lookup (preferred)
+        lelVal = findNumericByKey(parsed, ['lel', 'LEL', 'level', 'Level', 'value', 'Value']);
+      }
+
+      // If not found via parsed object, try tolerant regex that matches quoted keys like "LEL":0
+      if (lelVal === null) {
+        const m = raw.match(/["']?\blel\b["']?\s*[:=]\s*["']?(-?\d+(?:[.,]\d+)?)["']?/i);
         if (m) {
           lelVal = parseNumericValue(m[1]);
-        } else {
-          // As fallback, try to find any number in the message (not ideal but tolerant)
-          const m2 = raw.match(/([0-9]+(?:[.,][0-9]+)?)/);
-          if (m2) lelVal = parseNumericValue(m2[1]);
+        }
+      }
+
+      // Final fallback: pick a plausible numeric token from the message.
+      // Prefer numbers in range 0..100 (typical percentage). This prevents picking timestamps.
+      if (lelVal === null) {
+        const all = Array.from(raw.matchAll(/-?\d+(?:[.,]\d+)?/g)).map(m => parseFloat(m[0].replace(',', '.'))).filter(n => !isNaN(n));
+        if (all.length > 0) {
+          // prefer any value between 0 and 100 (last occurrence), else pick the last numeric token
+          const plausible = all.filter(n => n >= 0 && n <= 100);
+          if (plausible.length) {
+            lelVal = plausible[plausible.length - 1];
+          } else {
+            lelVal = all[all.length - 1];
+          }
         }
       }
 
       const tid = String(MQTT_TERMINAL_ID);
-      const prev = deviceStatus[tid] || {};
       const nowIso = new Date().toISOString();
       if (!deviceStatus[tid]) {
-        deviceStatus[tid] = { terminal_id: tid, lel: null, lastLelAt: null, panelOnline: false, lastPingAt: null, topic };
+        deviceStatus[tid] = { terminal_id: tid, lel: null, lastLelAt: null, panelOnline: false, lastPingAt: null, topic: MQTT_TOPIC_230346 };
       }
+
+      // Only overwrite if we parsed a valid numeric LEL
       if (lelVal !== null && !isNaN(lelVal)) {
+        // convert to Number explicitly
         deviceStatus[tid].lel = Number(lelVal);
         deviceStatus[tid].lastLelAt = nowIso;
-      } else {
-        // if we couldn't find a lel value, we do not overwrite existing numeric with null here
       }
 
       // Broadcast update for this terminal (include only relevant fields)
