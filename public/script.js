@@ -21,6 +21,38 @@ const LIST_PAGE_KEY = 'tank_list_page_v1';
 const PAGE_SIZE = 5; // show 5 devices per page
 let currentListPage = 1;
 
+// List view search state
+const LIST_SEARCH_KEY = 'tank_list_search_v1';
+let listSearchQuery = '';
+try {
+  const savedSearch = localStorage.getItem(LIST_SEARCH_KEY);
+  if (savedSearch) listSearchQuery = String(savedSearch);
+} catch (e) { /* ignore */ }
+
+// Filters state for list view
+const FILTERS_KEY = 'tank_list_filters_v1';
+const defaultFilters = {
+  emirates: [],                                // array of selected emirates
+  thresholdStatuses: [],                       // 'min' | 'max' | 'normal'
+  gasSensor: '',                               // '' | 'online' | 'offline'
+  batteryBand: '',                             // '' | 'low' | 'normal' | 'full' | 'unknown'
+  gsmBand: '',                                 // '' | 'strong' | 'fair' | 'weak' | 'unknown'
+  capacityMin: '',                             // numeric or ''
+  capacityMax: '',                             // numeric or ''
+  tankTypes: [],                               // selected tank types
+  installTypes: []                             // 'A/G' | 'B/G'
+};
+let filters = { ...defaultFilters };
+try {
+  const saved = localStorage.getItem(FILTERS_KEY);
+  if (saved) {
+    const parsed = JSON.parse(saved);
+    if (parsed && typeof parsed === 'object') {
+      filters = { ...defaultFilters, ...parsed };
+    }
+  }
+} catch (e) { /* ignore */ }
+
 // Try to restore saved page from localStorage
 try {
   const savedPage = parseInt(localStorage.getItem(LIST_PAGE_KEY), 10);
@@ -240,8 +272,8 @@ function setBatteryColor(pct, dotEl) {
   else dotEl.classList.add('status-red');
 }
 
-// status logic: NEW behavior per your spec
-// Signature changed to accept the device context (which may include lpg_min_level / lpg_max_level)
+// status logic: thresholds now map to RED for both below-min and above-max
+// Signature accepts the device context (which may include lpg_min_level / lpg_max_level)
 function setStatusColor(valueNum, valueEl, dotEl, device) {
   // remove any previous status classes
   dotEl.classList.remove('status-green', 'status-orange', 'status-red');
@@ -258,9 +290,9 @@ function setStatusColor(valueNum, valueEl, dotEl, device) {
   const min = (device && device.lpg_min_level !== undefined && device.lpg_min_level !== null) ? Number(device.lpg_min_level) : null;
   const max = (device && device.lpg_max_level !== undefined && device.lpg_max_level !== null) ? Number(device.lpg_max_level) : null;
 
-  // If min is set and value is below min -> ALWAYS ORANGE
+  // If min is set and value is below min -> ALWAYS RED (no orange)
   if (min !== null && !isNaN(min) && valueNum < min) {
-    dotEl.classList.add('status-orange');
+    dotEl.classList.add('status-red');
     return;
   }
 
@@ -270,36 +302,36 @@ function setStatusColor(valueNum, valueEl, dotEl, device) {
     return;
   }
 
-  // If either threshold exists (and we haven't matched above/below), mark GREEN
+  // If either threshold exists and we're within bounds -> GREEN
   if ((min !== null && !isNaN(min)) || (max !== null && !isNaN(max))) {
     dotEl.classList.add('status-green');
     return;
   }
 
-  // Fallback: no thresholds defined for this device -> use legacy mapping
+  // Fallback: no thresholds defined -> mid-range green, otherwise RED
   if (valueNum >= 30 && valueNum <= 70) {
     dotEl.classList.add('status-green');
-  } else if (valueNum < 30) {
-    dotEl.classList.add('status-orange');
-  } else { // valueNum > 70
+  } else {
     dotEl.classList.add('status-red');
   }
 }
 
 /* Helper for list view: compute status class for a given numeric value and device thresholds.
-   returns 'status-green' | 'status-orange' | 'status-red' | 'muted' */
+   returns 'status-green' | 'status-red' | 'muted' */
 function getStatusClassForValue(valueNum, device) {
   if (valueNum == null || isNaN(valueNum)) return 'muted';
   const min = (device && device.lpg_min_level !== undefined && device.lpg_min_level !== null) ? Number(device.lpg_min_level) : null;
   const max = (device && device.lpg_max_level !== undefined && device.lpg_max_level !== null) ? Number(device.lpg_max_level) : null;
 
-  if (min !== null && !isNaN(min) && valueNum < min) return 'status-orange';
+  // Threshold breaches: both map to red now
+  if (min !== null && !isNaN(min) && valueNum < min) return 'status-red';
   if (max !== null && !isNaN(max) && valueNum > max) return 'status-red';
+
+  // Within thresholds (if configured) -> green
   if ((min !== null && !isNaN(min)) || (max !== null && !isNaN(max))) return 'status-green';
 
-  // legacy mapping
+  // Legacy fallback: mid-range green, else red
   if (valueNum >= 30 && valueNum <= 70) return 'status-green';
-  if (valueNum < 30) return 'status-orange';
   return 'status-red';
 }
 
@@ -414,19 +446,19 @@ function createCard(device) {
     </div>
 
     <!-- MINI CARD FOR LEL & PANEL STATUS (attached to bottom of each card)
-         Layout: three equal columns (left: LEL%, middle: status dot, right: Panel Online/Offline)
+         Layout: three columns (left: LEL%, middle: dot/solenoid, right: Gas Sensor status)
     -->
     <div class="mini-card-lel" aria-live="polite" style="margin-top:12px;display:flex;align-items:center;gap:12px;">
-      <div class="mini-item mini-lel-value" aria-label="LEL percentage" style="flex:1;">
+      <div class="mini-item mini-lel-value" aria-label="LEL percentage" style="flex:1;display:none;">
         <div style="font-size:12px;color:var(--muted);">LEL</div>
         <div style="font-weight:700;color:var(--text);"><span class="lel-value">--</span>%</div>
       </div>
-      <div class="mini-item mini-lel-dot" aria-hidden="false" style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;">
-        <span class="status-dot status-gray" aria-hidden="true" title="LEL status"></span>
+      <div class="mini-item mini-lel-dot" aria-hidden="false" style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;margin-left:-30px;">
+        <span class="status-dot" aria-hidden="true" title="LEL status"></span>
         <div class="lel-dot-label" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>
       </div>
-      <div class="mini-item mini-panel-status" aria-label="Panel status" style="flex:1;display:flex;justify-content:flex-end;align-items:center;">
-        <div class="panel-status-text" style="font-weight:700;color:var(--red);">Panel Offline</div>
+      <div class="mini-item mini-panel-status" aria-label="Gas Sensor status" style="flex:1;display:flex;justify-content:flex-end;align-items:center;">
+        <div class="panel-status-text" style="font-weight:700;color:var(--red);">Gas Sensor Offline</div>
       </div>
     </div>
   `.trim();
@@ -646,6 +678,7 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
 
     // cache last battery
     device._lastBattery = (battPct == null || isNaN(battPct)) ? (rawBatt != null ? String(rawBatt) : null) : String(battPct);
+    device._lastBatteryPct = (battPct == null || isNaN(battPct)) ? null : Number(battPct);
   } catch (e) {
     // keep previous battery if present, otherwise show muted dash
     try {
@@ -666,6 +699,7 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
         batteryDotEl.classList.add('status-red');
       }
     } catch (ignored) { /* ignore */ }
+    device._lastBatteryPct = device._lastBattery && /^\d+$/.test(String(device._lastBattery)) ? Number(device._lastBattery) : null;
   }
 
   // NEW: Fetch RSSI (GSM signal) and update GSM UI — non-fatal if it fails
@@ -690,14 +724,14 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
       }
     }
 
-    // cache last GSM display (store percent number if available else null)
+    // cache last GSM display
     device._lastGsm = (gsmPct == null || isNaN(gsmPct)) ? (rawRssi != null ? String(rawRssi) : null) : String(gsmPct);
+    device._lastGsmPct = (gsmPct == null || isNaN(gsmPct)) ? null : Number(gsmPct);
   } catch (err) {
     // On error, preserve previous gsm if available; otherwise show muted dash or 'N/A'
     try {
       if (gsmValueEl) {
         if (device._lastGsm != null) {
-          // if last stored is numeric percent string, append '%'
           const last = String(device._lastGsm);
           gsmValueEl.textContent = /^\d+$/.test(last) ? (last + '%') : last;
           gsmValueEl.classList.add('muted');
@@ -707,6 +741,7 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
         }
       }
     } catch (ignored) { /* ignore */ }
+    device._lastGsmPct = device._lastGsm && /^\d+$/.test(String(device._lastGsm)) ? Number(device._lastGsm) : null;
   }
 
   // Update list view row if present (keeps list in sync with card updates)
@@ -744,11 +779,17 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
       const lelDot = card.querySelector('.mini-lel-dot .status-dot');
       const lelLabelEl = card.querySelector('.mini-lel-dot .lel-dot-label');
       const panelTextEl = card.querySelector('.panel-status-text');
+      const lelValueItem = card.querySelector('.mini-item.mini-lel-value');
+      const panelStatusItem = card.querySelector('.mini-item.mini-panel-status');
 
-      // Left side: LEL% number (hide if panel offline)
+      // Hide LEL% column when offline; show it when online
+      if (lelValueItem) {
+        lelValueItem.style.display = dev._realtime.panelOnline ? '' : 'none';
+      }
+
+      // Left side: LEL% number
       if (lelValueEl) {
         if (!dev._realtime.panelOnline) {
-          // Panel offline: hide LEL value
           lelValueEl.textContent = '--';
         } else if (dev._realtime.lel === null || isNaN(dev._realtime.lel)) {
           lelValueEl.textContent = 'N/A';
@@ -758,31 +799,31 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
         }
       }
 
-      // Middle: dot (COLOR AND LABEL DETERMINED BY PANEL ONLINE STATUS AND LEL VALUE)
-      // If panel is OFFLINE => GRAY dot, no text
-      // If panel is ONLINE: LEL > 25 => RED + "Solenoid On", otherwise => GREEN + "Solenoid Off"
+      // Middle: dot (hide entirely when offline; otherwise color + label by LEL)
       if (lelDot) {
-        lelDot.classList.remove('status-green', 'status-red', 'status-gray');
         const lelNum = dev._realtime.lel;
         const panelOnline = dev._realtime.panelOnline;
 
-        // Check if panel is offline first
+        // Always reset classes
+        lelDot.classList.remove('status-green', 'status-red', 'status-gray');
+
         if (!panelOnline) {
-          // Panel offline: gray dot, no label
-          lelDot.classList.add('status-gray');
+          // Hide the dot entirely when offline; clear label
+          lelDot.style.display = 'none';
           if (lelLabelEl) {
             lelLabelEl.textContent = '';
             lelLabelEl.style.color = '';
           }
-        } else if (lelNum == null || isNaN(lelNum)) {
-          // Panel online but LEL unknown: show red dot and muted label
-          lelDot.classList.add('status-red');
-          if (lelLabelEl) {
-            lelLabelEl.textContent = 'Solenoid Off';
-            lelLabelEl.style.color = (getComputedStyle(document.documentElement).getPropertyValue('--muted') || '#9ca3af');
-          }
         } else {
-          if (Number(lelNum) > 25) {
+          // Show the dot when online and set classes/labels
+          lelDot.style.display = '';
+          if (lelNum == null || isNaN(lelNum)) {
+            lelDot.classList.add('status-red');
+            if (lelLabelEl) {
+              lelLabelEl.textContent = 'Solenoid Off';
+              lelLabelEl.style.color = (getComputedStyle(document.documentElement).getPropertyValue('--muted') || '#9ca3af');
+            }
+          } else if (Number(lelNum) > 25) {
             // Above threshold: RED + Solenoid On (red)
             lelDot.classList.add('status-red');
             if (lelLabelEl) {
@@ -800,14 +841,20 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
         }
       }
 
-      // Right: Panel Online/Offline text colored
-      if (panelTextEl) {
+      // Gas Sensor status text: center when OFFLINE; default position when ONLINE
+      if (panelTextEl && panelStatusItem) {
         if (dev._realtime.panelOnline) {
-          panelTextEl.textContent = 'Panel Online';
+          panelTextEl.textContent = 'Gas Sensor Online';
           panelTextEl.style.color = getComputedStyle(document.documentElement).getPropertyValue('--green') || '#22c55e';
+          // restore default right alignment
+          panelStatusItem.style.justifyContent = 'flex-end';
+          panelStatusItem.style.flex = ''; // revert to CSS default
         } else {
-          panelTextEl.textContent = 'Panel Offline';
+          panelTextEl.textContent = 'Gas Sensor Offline';
           panelTextEl.style.color = getComputedStyle(document.documentElement).getPropertyValue('--red') || '#ef4444';
+          // center the offline message across the mini card
+          panelStatusItem.style.justifyContent = 'center';
+          panelStatusItem.style.flex = '1 1 100%';
         }
       }
 
@@ -842,175 +889,175 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
 
     // Individual updates (your server emits 'status_update' events)
     // Helper: robust recursive extractor for numeric LEL from various payload shapes
-function extractLelFromPayload(obj) {
-  // Robust extractor that:
-  //  - prefers explicit keys like 'lel', 'level', 'value', 'msg', 'message'
-  //  - ignores obvious identifier keys (id, terminal, serial, sn, ts, timestamp, time, date)
-  //  - rejects implausibly large numbers (e.g. terminal IDs like 230346)
-  const tryParseNumber = (v) => {
-    if (v == null) return null;
-    if (typeof v === 'number' && !isNaN(v)) {
-      const n = Number(v);
-      // reject implausibly large values (likely ids)
-      if (!isFinite(n) || Math.abs(n) > 1000) return null;
-      return n;
-    }
-    const s = String(v).trim();
-    if (s === '') return null;
+    function extractLelFromPayload(obj) {
+      // Robust extractor that:
+      //  - prefers explicit keys like 'lel', 'level', 'value', 'msg', 'message'
+      //  - ignores obvious identifier keys (id, terminal, serial, sn, ts, timestamp, time, date)
+      //  - rejects implausibly large numbers (e.g. terminal IDs like 230346)
+      const tryParseNumber = (v) => {
+        if (v == null) return null;
+        if (typeof v === 'number' && !isNaN(v)) {
+          const n = Number(v);
+          // reject implausibly large values (likely ids)
+          if (!isFinite(n) || Math.abs(n) > 1000) return null;
+          return n;
+        }
+        const s = String(v).trim();
+        if (s === '') return null;
 
-    // Fast-reject common non-numeric tokens
-    if (/^[A-Za-z]+$/.test(s)) return null;
+        // Fast-reject common non-numeric tokens
+        if (/^[A-Za-z]+$/.test(s)) return null;
 
-    // Prefer existing parseNumericValue if available
-    try {
-      if (typeof parseNumericValue === 'function') {
-        const p = parseNumericValue(s);
-        if (p != null && !isNaN(p) && Math.abs(p) <= 1000) return p;
-      }
-    } catch (e) { /* ignore and continue */ }
+        // Prefer existing parseNumericValue if available
+        try {
+          if (typeof parseNumericValue === 'function') {
+            const p = parseNumericValue(s);
+            if (p != null && !isNaN(p) && Math.abs(p) <= 1000) return p;
+          }
+        } catch (e) { /* ignore and continue */ }
 
-    // direct numeric substring (e.g. "LEL: 12.3", "12.3%")
-    const m = s.match(/-?\d+(?:[.,]\d+)?/);
-    if (m) {
-      const n = parseFloat(m[0].replace(',', '.'));
-      if (!isNaN(n) && Math.abs(n) <= 1000) return n;
-    }
+        // direct numeric substring (e.g. "LEL: 12.3", "12.3%")
+        const m = s.match(/-?\d+(?:[.,]\d+)?/);
+        if (m) {
+          const n = parseFloat(m[0].replace(',', '.'));
+          if (!isNaN(n) && Math.abs(n) <= 1000) return n;
+        }
 
-    return null;
-  };
+        return null;
+      };
 
-  // Walk the object recursively and try to find the best numeric candidate.
-  const seen = new Set();
-  function walk(value, keyName) {
-    if (value == null) return null;
+      // Walk the object recursively and try to find the best numeric candidate.
+      const seen = new Set();
+      function walk(value, keyName) {
+        if (value == null) return null;
 
-    // If the current key is clearly an identifier/terminal, skip using it as a numeric source.
-    if (keyName && /^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(String(keyName))) {
-      // but still traverse into the value if it's an object/array to find nested 'lel' keys
-      if (typeof value === 'object') {
-        // continue below to traverse children
-      } else {
+        // If the current key is clearly an identifier/terminal, skip using it as a numeric source.
+        if (keyName && /^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(String(keyName))) {
+          // but still traverse into the value if it's an object/array to find nested 'lel' keys
+          if (typeof value === 'object') {
+            // continue below to traverse children
+          } else {
+            return null;
+          }
+        }
+
+        // primitive number or numeric-like string
+        const n = tryParseNumber(value);
+        if (n != null && !isNaN(n)) return n;
+
+        // try to parse string as JSON and walk it
+        if (typeof value === 'string') {
+          const s = value.trim();
+          if (s.startsWith('{') || s.startsWith('[')) {
+            try {
+              const parsed = JSON.parse(s);
+              const r = walk(parsed, keyName);
+              if (r != null) return r;
+            } catch (e) {
+              // not JSON, ignore
+            }
+          }
+          return null;
+        }
+
+        if (typeof value === 'object') {
+          if (seen.has(value)) return null;
+          seen.add(value);
+
+          // check the most likely keys first (explicit names)
+          const keys = Object.keys(value || {});
+          const priorityKeys = keys.filter(k => /^(lel|level|value|msg|message)$/i.test(k));
+          for (const k of priorityKeys) {
+            // Skip identifier-like keys even in priority (defensive)
+            if (/^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(k)) continue;
+            const r = walk(value[k], k);
+            if (r != null) return r;
+          }
+
+          // otherwise, scan other keys but skip identifier-like keys as numeric sources
+          for (const k of keys) {
+            if (/^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(k)) {
+              // still traverse into objects/arrays to find nested sensor fields, but do not treat the value at this key
+              const child = value[k];
+              if (typeof child === 'object') {
+                const r = walk(child, k);
+                if (r != null) return r;
+              }
+              continue;
+            }
+            const r = walk(value[k], k);
+            if (r != null) return r;
+          }
+
+          // arrays
+          if (Array.isArray(value)) {
+            for (const item of value) {
+              const r = walk(item, keyName);
+              if (r != null) return r;
+            }
+          }
+        }
+
         return null;
       }
-    }
 
-    // primitive number or numeric-like string
-    const n = tryParseNumber(value);
-    if (n != null && !isNaN(n)) return n;
+      // first pass: recursive walk
+      const found = walk(obj, null);
+      if (found != null && !isNaN(found)) return Number(found);
 
-    // try to parse string as JSON and walk it
-    if (typeof value === 'string') {
-      const s = value.trim();
-      if (s.startsWith('{') || s.startsWith('[')) {
-        try {
-          const parsed = JSON.parse(s);
-          const r = walk(parsed, keyName);
-          if (r != null) return r;
-        } catch (e) {
-          // not JSON, ignore
+      // fallback: stringify and find first reasonable number (but still reject huge numbers)
+      try {
+        const s = JSON.stringify(obj);
+        const m = s.match(/-?\d+(?:[.,]\d+)?/);
+        if (m) {
+          const n = parseFloat(m[0].replace(',', '.'));
+          if (!isNaN(n) && Math.abs(n) <= 1000) return n;
         }
-      }
+      } catch (e) { /* ignore */ }
+
       return null;
     }
 
-    if (typeof value === 'object') {
-      if (seen.has(value)) return null;
-      seen.add(value);
+    // Tolerant status_update handler — normalizes payloads and extracts numeric LEL
+    socket.on('status_update', (data) => {
+      try {
+        // TEMP DEBUG: log the raw payload so we can inspect real messages if parsing fails
+        // Leave this enabled for now — if payloads contain sensitive data you can remove later.
+        console.debug('[realtime] status_update received:', data);
 
-      // check the most likely keys first (explicit names)
-      const keys = Object.keys(value || {});
-      const priorityKeys = keys.filter(k => /^(lel|level|value|msg|message)$/i.test(k));
-      for (const k of priorityKeys) {
-        // Skip identifier-like keys even in priority (defensive)
-        if (/^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(k)) continue;
-        const r = walk(value[k], k);
-        if (r != null) return r;
-      }
+        // Normalize terminal id (accept several possible keys)
+        const tid = String(
+          data && (data.terminal_id || data.terminalId || data.id ||
+          (data.payload && data.payload.terminal_id) ||
+          (data.data && data.data.terminal_id) ) || ''
+        ).trim();
+        if (!tid) return;
 
-      // otherwise, scan other keys but skip identifier-like keys as numeric sources
-      for (const k of keys) {
-        if (/^(id|terminal|serial|sn|ts|timestamp|time|date)$/i.test(k)) {
-          // still traverse into objects/arrays to find nested sensor fields, but do not treat the value at this key
-          const child = value[k];
-          if (typeof child === 'object') {
-            const r = walk(child, k);
-            if (r != null) return r;
-          }
-          continue;
+        // Build a flattened object for easier parsing
+        const normalized = Object.assign({}, data);
+        if (data && data.payload && typeof data.payload === 'object') Object.assign(normalized, data.payload);
+        if (data && data.data && typeof data.data === 'object') Object.assign(normalized, data.data);
+
+        // Prefer numeric `lel` if present and valid
+        let lelVal = null;
+        if (normalized.lel !== undefined && normalized.lel !== null && normalized.lel !== '') {
+          const n = Number(normalized.lel);
+          if (!isNaN(n)) lelVal = n;
         }
-        const r = walk(value[k], k);
-        if (r != null) return r;
-      }
 
-      // arrays
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          const r = walk(item, keyName);
-          if (r != null) return r;
+        // If not found, use robust extractor
+        if (lelVal === null) {
+          lelVal = extractLelFromPayload(normalized);
         }
+
+        // Ensure payload passed to applyStatusToDevice has either numeric or null `lel`
+        const payloadForApply = Object.assign({}, normalized, { lel: (lelVal === null ? null : Number(lelVal)) });
+
+        applyStatusToDevice(tid, payloadForApply);
+      } catch (e) {
+        console.warn('Realtime status_update handler error', e && e.message);
       }
-    }
-
-    return null;
-  }
-
-  // first pass: recursive walk
-  const found = walk(obj, null);
-  if (found != null && !isNaN(found)) return Number(found);
-
-  // fallback: stringify and find first reasonable number (but still reject huge numbers)
-  try {
-    const s = JSON.stringify(obj);
-    const m = s.match(/-?\d+(?:[.,]\d+)?/);
-    if (m) {
-      const n = parseFloat(m[0].replace(',', '.'));
-      if (!isNaN(n) && Math.abs(n) <= 1000) return n;
-    }
-  } catch (e) { /* ignore */ }
-
-  return null;
-}
-
-// Tolerant status_update handler — normalizes payloads and extracts numeric LEL
-socket.on('status_update', (data) => {
-  try {
-    // TEMP DEBUG: log the raw payload so we can inspect real messages if parsing fails
-    // Leave this enabled for now — if payloads contain sensitive data you can remove later.
-    console.debug('[realtime] status_update received:', data);
-
-    // Normalize terminal id (accept several possible keys)
-    const tid = String(
-      data && (data.terminal_id || data.terminalId || data.id ||
-      (data.payload && data.payload.terminal_id) ||
-      (data.data && data.data.terminal_id) ) || ''
-    ).trim();
-    if (!tid) return;
-
-    // Build a flattened object for easier parsing
-    const normalized = Object.assign({}, data);
-    if (data && data.payload && typeof data.payload === 'object') Object.assign(normalized, data.payload);
-    if (data && data.data && typeof data.data === 'object') Object.assign(normalized, data.data);
-
-    // Prefer numeric `lel` if present and valid
-    let lelVal = null;
-    if (normalized.lel !== undefined && normalized.lel !== null && normalized.lel !== '') {
-      const n = Number(normalized.lel);
-      if (!isNaN(n)) lelVal = n;
-    }
-
-    // If not found, use robust extractor
-    if (lelVal === null) {
-      lelVal = extractLelFromPayload(normalized);
-    }
-
-    // Ensure payload passed to applyStatusToDevice has either numeric or null `lel`
-    const payloadForApply = Object.assign({}, normalized, { lel: (lelVal === null ? null : Number(lelVal)) });
-
-    applyStatusToDevice(tid, payloadForApply);
-  } catch (e) {
-    console.warn('Realtime status_update handler error', e && e.message);
-  }
-});
+    });
 
     socket.on('disconnect', (reason) => {
       // console.debug('Realtime socket disconnected', reason);
@@ -2137,7 +2184,7 @@ function showDeviceInfoModal(initialSerial) {
       capacityInput.value = info.lpg_tank_capacity || '';
       detailsInput.value = info.lpg_tank_details || '';
       typeSelect.value = info.lpg_tank_type || '';
-      installSelect.value = info.lpg_installation_type || '';
+      installSelect.value = info.lpg_tank_installation || info.lpg_installation_type || '';
       notesInput.value = info.notes || '';
 
       // populate new alarm email input
@@ -2161,6 +2208,8 @@ function showDeviceInfoModal(initialSerial) {
         dev.project_code = info.project_code || null;
         dev.emirate = info.emirate || null;
         dev.lpg_tank_capacity = info.lpg_tank_capacity || null;
+        dev.lpg_tank_type = info.lpg_tank_type || null;
+        dev.lpg_installation_type = info.lpg_tank_installation || info.lpg_installation_type || null;
       }
 
       msgEl.textContent = 'Loaded existing info.';
@@ -2258,6 +2307,8 @@ function showDeviceInfoModal(initialSerial) {
         dev.project_code = saved.project_code || null;
         dev.emirate = saved.emirate || null;
         dev.lpg_tank_capacity = saved.lpg_tank_capacity || null;
+        dev.lpg_tank_type = saved.lpg_tank_type || null;
+        dev.lpg_installation_type = saved.lpg_tank_installation || saved.lpg_installation_type || null;
       }
       msgEl.style.color = '#22c55e';
       msgEl.textContent = 'Saved.';
@@ -2412,9 +2463,9 @@ function showTankInfoViewModal(terminalId) {
       modal.querySelector('#view-capacity').textContent = info.lpg_tank_capacity || '—';
       modal.querySelector('#view-details').textContent = info.lpg_tank_details || '—';
       modal.querySelector('#view-type').textContent = info.lpg_tank_type || '—';
-      modal.querySelector('#view-install').textContent = info.lpg_installation_type || '—';
+      modal.querySelector('#view-install').textContent = info.lpg_tank_installation || info.lpg_installation_type || '—';
       modal.querySelector('#view-notes').textContent = info.notes && String(info.notes).trim() ? info.notes : '(No additional notes)';
-      modal.querySelector('#view-saved-at').textContent = info.created_at ? new Date(info.created_at).toLocaleString() : '���';
+      modal.querySelector('#view-saved-at').textContent = info.created_at ? new Date(info.created_at).toLocaleString() : '—';
 
       // NEW: min/max display
       modal.querySelector('#view-min-level').textContent = (info.lpg_min_level !== null && info.lpg_min_level !== undefined) ? String(info.lpg_min_level) + '%' : '—';
@@ -2922,10 +2973,15 @@ async function refreshSitesAndUpdateUI() {
 }
 
 /* ---------------------------
-   LIST VIEW IMPLEMENTATION
+   LIST VIEW IMPLEMENTATION + SEARCH + FILTERS
    --------------------------- */
 
 const VIEW_KEY = 'tank_view_mode'; // 'cards' or 'list'
+
+// Helper to get the "Project Name" shown in list view
+function getProjectName(device) {
+  return (device.title || device.name || '').trim();
+}
 
 function applyViewMode(mode) {
   const tanks = document.getElementById('tanks');
@@ -2974,7 +3030,44 @@ function setupViewToggle() {
   });
 }
 
-// Set list page (clamped), persist and re-render list
+// Band helpers for battery and GSM
+function batteryBandForDevice(dev) {
+  const pct = dev._lastBatteryPct;
+  if (pct == null || isNaN(pct)) return 'unknown';
+  if (pct >= 50) return 'full';
+  if (pct >= 20) return 'normal';
+  return 'low';
+}
+function gsmBandForDevice(dev) {
+  const pct = dev._lastGsmPct;
+  if (pct == null || isNaN(pct)) return 'unknown';
+  if (pct > 70) return 'strong';
+  if (pct >= 30 && pct <= 70) return 'fair';
+  return 'weak';
+}
+function gasSensorStatusForDevice(dev) {
+  const online = dev && dev._realtime ? !!dev._realtime.panelOnline : null;
+  if (online === true) return 'online';
+  if (online === false) return 'offline';
+  return 'unknown';
+}
+function thresholdStatusForDevice(dev) {
+  const val = dev._lastValueNumeric;
+  const min = (dev && dev.lpg_min_level !== undefined && dev.lpg_min_level !== null) ? Number(dev.lpg_min_level) : null;
+  const max = (dev && dev.lpg_max_level !== undefined && dev.lpg_max_level !== null) ? Number(dev.lpg_max_level) : null;
+  if (val == null || isNaN(val) || (min == null && max == null)) return 'unknown';
+  if (min != null && !isNaN(min) && val < min) return 'min';
+  if (max != null && !isNaN(max) && val > max) return 'max';
+  return 'normal';
+}
+function parseCapacityNumeric(s) {
+  if (!s && s !== 0) return null;
+  const m = String(s).match(/-?\d+(\.\d+)?/);
+  if (!m) return null;
+  const n = parseFloat(m[0]);
+  return isNaN(n) ? null : n;
+}
+
 function setListPage(page) {
   const total = getTotalPages();
   const p = Math.max(1, Math.min(total, Number(page) || 1));
@@ -2984,8 +3077,74 @@ function setListPage(page) {
   renderListView();
 }
 
+function getFilteredDevices() {
+  const q = (listSearchQuery || '').trim().toLowerCase();
+  const list = devices.filter(d => {
+    // Project Name search (prefix on title/name)
+    if (q.length > 0 && !getProjectName(d).toLowerCase().startsWith(q)) return false;
+
+    // Emirate filter (multi)
+    if (filters.emirates && filters.emirates.length) {
+      const em = (d.emirate || '').trim();
+      if (!filters.emirates.includes(em)) return false;
+    }
+
+    // Threshold status ("Min Alarm, Max Alarm, Normal Range")
+    if (filters.thresholdStatuses && filters.thresholdStatuses.length) {
+      const st = thresholdStatusForDevice(d); // 'min' | 'max' | 'normal' | 'unknown'
+      // map display to keys
+      const selectedKeys = filters.thresholdStatuses.map(x => (x === 'Min Alarm' ? 'min' : x === 'Max Alarm' ? 'max' : x === 'Normal Range' ? 'normal' : ''));
+      if (!selectedKeys.includes(st)) return false;
+    }
+
+    // Gas Sensor Status (Online/Offline)
+    if (filters.gasSensor && filters.gasSensor !== '') {
+      const gs = gasSensorStatusForDevice(d);
+      if (gs !== filters.gasSensor) return false;
+    }
+
+    // Battery band
+    if (filters.batteryBand && filters.batteryBand !== '') {
+      const bb = batteryBandForDevice(d);
+      if (bb !== filters.batteryBand) return false;
+    }
+
+    // GSM band
+    if (filters.gsmBand && filters.gsmBand !== '') {
+      const gb = gsmBandForDevice(d);
+      if (gb !== filters.gsmBand) return false;
+    }
+
+    // Capacity range
+    if ((filters.capacityMin && String(filters.capacityMin).trim() !== '') || (filters.capacityMax && String(filters.capacityMax).trim() !== '')) {
+      const cap = parseCapacityNumeric(d.lpg_tank_capacity);
+      const min = filters.capacityMin && String(filters.capacityMin).trim() !== '' ? Number(filters.capacityMin) : null;
+      const max = filters.capacityMax && String(filters.capacityMax).trim() !== '' ? Number(filters.capacityMax) : null;
+      if (cap == null || isNaN(cap)) return false;
+      if (min != null && !isNaN(min) && cap < min) return false;
+      if (max != null && !isNaN(max) && cap > max) return false;
+    }
+
+    // Tank type (multi)
+    if (filters.tankTypes && filters.tankTypes.length) {
+      const tt = (d.lpg_tank_type || '').trim();
+      if (!filters.tankTypes.includes(tt)) return false;
+    }
+
+    // Installation type (multi)
+    if (filters.installTypes && filters.installTypes.length) {
+      const it = (d.lpg_installation_type || '').trim();
+      if (!filters.installTypes.includes(it)) return false;
+    }
+
+    return true;
+  });
+  return list;
+}
+
 function getTotalPages() {
-  return Math.max(1, Math.ceil(devices.length / PAGE_SIZE));
+  const filtered = getFilteredDevices();
+  return Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
 }
 
 // Build the list table and populate it from devices[] and cached values
@@ -2993,14 +3152,291 @@ function renderListView() {
   const container = document.getElementById('tanks-list');
   if (!container) return;
 
-  // Ensure page within range
-  const totalPages = getTotalPages();
+  // Ensure page within range using filtered list
+  const filteredDevices = getFilteredDevices();
+  const totalPages = Math.max(1, Math.ceil(filteredDevices.length / PAGE_SIZE));
   if (currentListPage > totalPages) currentListPage = totalPages;
   if (currentListPage < 1) currentListPage = 1;
   try { localStorage.setItem(LIST_PAGE_KEY, String(currentListPage)); } catch (e) { /* ignore */ }
 
-  // Build table header
+  // Clear container
   container.innerHTML = '';
+
+  // SEARCH UI (Project Name) with autocomplete suggestions
+  const searchWrap = document.createElement('div');
+  searchWrap.style.marginBottom = '10px';
+  searchWrap.style.position = 'relative';
+  searchWrap.innerHTML = `
+    <input id="list-search-input" class="graph-title-input" placeholder="Search by Project Name (min 3 chars)" value="${escapeHtml(listSearchQuery)}" aria-label="Search Project Name" style="min-width:280px;" />
+    <div id="list-search-suggest" class="dropdown" style="display:none; position:absolute; top:42px; left:0; min-width:280px; z-index:1300;"></div>
+  `;
+  container.appendChild(searchWrap);
+
+  const inputEl = searchWrap.querySelector('#list-search-input');
+  const suggestEl = searchWrap.querySelector('#list-search-suggest');
+
+  function allProjectNames() {
+    const set = new Set(devices.map(getProjectName).filter(Boolean));
+    return Array.from(set);
+  }
+
+  function buildSuggestions(query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (q.length < 3) return [];
+    const names = allProjectNames();
+    return names.filter(n => n.toLowerCase().startsWith(q)).slice(0, 12);
+  }
+
+  function showSuggestions(query) {
+    const items = buildSuggestions(query);
+    if (!items.length) {
+      suggestEl.style.display = 'none';
+      suggestEl.innerHTML = '';
+      return;
+    }
+    suggestEl.innerHTML = items.map(n => `<div class="dropdown-row"><button class="btn" type="button" data-value="${escapeHtml(n)}" style="width:100%; justify-content:flex-start;">${escapeHtml(n)}</button></div>`).join('');
+    suggestEl.style.display = 'block';
+
+    // attach click handlers
+    suggestEl.querySelectorAll('button[data-value]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const val = btn.getAttribute('data-value') || '';
+        inputEl.value = val;
+        applySearch(val);
+      });
+    });
+  }
+
+  function hideSuggestionsSoon() {
+    setTimeout(() => {
+      suggestEl.style.display = 'none';
+    }, 120);
+  }
+
+  function applySearch(query) {
+    listSearchQuery = String(query || '').trim();
+    try { localStorage.setItem(LIST_SEARCH_KEY, listSearchQuery); } catch (e) { /* ignore */ }
+    currentListPage = 1;
+    renderListView();
+  }
+
+  inputEl.addEventListener('input', (e) => {
+    const val = inputEl.value || '';
+    showSuggestions(val);
+  });
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applySearch(inputEl.value || '');
+    } else if (e.key === 'Escape') {
+      hideSuggestionsSoon();
+    }
+  });
+  inputEl.addEventListener('blur', hideSuggestionsSoon);
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#list-search-suggest') && e.target !== inputEl) {
+      suggestEl.style.display = 'none';
+    }
+  });
+
+  // FILTERS BAR
+  const filtersBar = document.createElement('div');
+  filtersBar.style.margin = '8px 0 12px 0';
+  filtersBar.style.display = 'grid';
+  filtersBar.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+  filtersBar.style.gap = '10px 16px';
+  filtersBar.innerHTML = `
+    <div>
+      <label style="font-size:13px;color:var(--muted);">Emirate</label>
+      <select id="flt-emirate" class="graph-title-input" multiple size="4">
+        <option value="Abu Dhabi">Abu Dhabi</option>
+        <option value="Ajman">Ajman</option>
+        <option value="Dubai">Dubai</option>
+        <option value="Fujairah">Fujairah</option>
+        <option value="Ras Al Khaimah">Ras Al Khaimah</option>
+        <option value="Sharjah">Sharjah</option>
+        <option value="Umm Al Quwain">Umm Al Quwain</option>
+      </select>
+    </div>
+
+    <div>
+      <label style="font-size:13px;color:var(--muted);">Gas Sensor Status</label>
+      <select id="flt-gas" class="graph-title-input">
+        <option value="">Any</option>
+        <option value="online">Online</option>
+        <option value="offline">Offline</option>
+      </select>
+    </div>
+
+    <div>
+      <label style="font-size:13px;color:var(--muted);">Threshold Status</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
+        <label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="flt-th-min" /> <span>Min Alarm</span></label>
+        <label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="flt-th-max" /> <span>Max Alarm</span></label>
+        <label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="flt-th-norm" /> <span>Normal Range</span></label>
+      </div>
+    </div>
+
+    <div>
+      <label style="font-size:13px;color:var(--muted);">Battery</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
+        <button class="btn flt-batt" data-val="">Any</button>
+        <button class="btn flt-batt" data-val="low">Low (&lt;20%)</button>
+        <button class="btn flt-batt" data-val="normal">Normal (20–50%)</button>
+        <button class="btn flt-batt" data-val="full">Full (≥50%)</button>
+        <button class="btn flt-batt" data-val="unknown">Unknown</button>
+      </div>
+    </div>
+
+    <div>
+      <label style="font-size:13px;color:var(--muted);">GSM</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
+        <button class="btn flt-gsm" data-val="">Any</button>
+        <button class="btn flt-gsm" data-val="strong">Strong (&gt;70%)</button>
+        <button class="btn flt-gsm" data-val="fair">Fair (30–70%)</button>
+        <button class="btn flt-gsm" data-val="weak">Weak (&lt;30%)</button>
+        <button class="btn flt-gsm" data-val="unknown">Unknown</button>
+      </div>
+    </div>
+
+    <div>
+      <label style="font-size:13px;color:var(--muted);">LPG Tank Capacity</label>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        <input id="flt-cap-min" class="graph-title-input" placeholder="Min" value="${escapeHtml(String(filters.capacityMin || ''))}" />
+        <input id="flt-cap-max" class="graph-title-input" placeholder="Max" value="${escapeHtml(String(filters.capacityMax || ''))}" />
+      </div>
+    </div>
+
+    <div>
+      <label style="font-size:13px;color:var(--muted);">LPG Tank Type</label>
+      <select id="flt-type" class="graph-title-input" multiple size="4">
+        <option value="Spherical">Spherical</option>
+        <option value="Cylindrical horizontal">Cylindrical horizontal</option>
+        <option value="Cylindrical vertical">Cylindrical vertical</option>
+      </select>
+    </div>
+
+    <div>
+      <label style="font-size:13px;color:var(--muted);">LPG Installation Type</label>
+      <select id="flt-install" class="graph-title-input" multiple size="3">
+        <option value="A/G">A/G</option>
+        <option value="B/G">B/G</option>
+      </select>
+    </div>
+
+    <div style="grid-column: 1 / -1; display:flex; gap:10px; align-items:center; margin-top:6px;">
+      <button id="flt-apply" class="btn" type="button">Apply Filters</button>
+      <button id="flt-clear" class="btn" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear All</button>
+      <span id="flt-msg" style="color:var(--muted);font-size:13px;"></span>
+    </div>
+  `;
+  container.appendChild(filtersBar);
+
+  // Initialize filter controls with current state
+  const emirateSel = filtersBar.querySelector('#flt-emirate');
+  const gasSel = filtersBar.querySelector('#flt-gas');
+  const thMin = filtersBar.querySelector('#flt-th-min');
+  const thMax = filtersBar.querySelector('#flt-th-max');
+  const thNorm = filtersBar.querySelector('#flt-th-norm');
+  const battBtns = Array.from(filtersBar.querySelectorAll('.flt-batt'));
+  const gsmBtns = Array.from(filtersBar.querySelectorAll('.flt-gsm'));
+  const capMinEl = filtersBar.querySelector('#flt-cap-min');
+  const capMaxEl = filtersBar.querySelector('#flt-cap-max');
+  const typeSel = filtersBar.querySelector('#flt-type');
+  const installSel = filtersBar.querySelector('#flt-install');
+  const applyBtn = filtersBar.querySelector('#flt-apply');
+  const clearBtn = filtersBar.querySelector('#flt-clear');
+  const fltMsg = filtersBar.querySelector('#flt-msg');
+
+  // Set emirate selections
+  try {
+    Array.from(emirateSel.options).forEach(opt => {
+      if (filters.emirates.includes(opt.value)) opt.selected = true;
+    });
+  } catch (e) { /* ignore */ }
+
+  // Set gas sensor
+  gasSel.value = filters.gasSensor || '';
+
+  // Set threshold checkboxes
+  thMin.checked = filters.thresholdStatuses.includes('Min Alarm');
+  thMax.checked = filters.thresholdStatuses.includes('Max Alarm');
+  thNorm.checked = filters.thresholdStatuses.includes('Normal Range');
+
+  // Highlight selected battery button
+  battBtns.forEach(btn => {
+    const selected = (btn.dataset.val || '') === (filters.batteryBand || '');
+    btn.style.boxShadow = selected ? '0 12px 30px rgba(3,7,18,0.55)' : '';
+    btn.style.transform = selected ? 'translateY(-2px)' : '';
+  });
+  // Highlight selected GSM button
+  gsmBtns.forEach(btn => {
+    const selected = (btn.dataset.val || '') === (filters.gsmBand || '');
+    btn.style.boxShadow = selected ? '0 12px 30px rgba(3,7,18,0.55)' : '';
+    btn.style.transform = selected ? 'translateY(-2px)' : '';
+  });
+
+  // Wire battery buttons
+  battBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      filters.batteryBand = btn.dataset.val || '';
+      battBtns.forEach(b => { b.style.boxShadow = ''; b.style.transform = ''; });
+      btn.style.boxShadow = '0 12px 30px rgba(3,7,18,0.55)';
+      btn.style.transform = 'translateY(-2px)';
+    });
+  });
+  // Wire GSM buttons
+  gsmBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      filters.gsmBand = btn.dataset.val || '';
+      gsmBtns.forEach(b => { b.style.boxShadow = ''; b.style.transform = ''; });
+      btn.style.boxShadow = '0 12px 30px rgba(3,7,18,0.55)';
+      btn.style.transform = 'translateY(-2px)';
+    });
+  });
+
+  function persistFilters() {
+    try { localStorage.setItem(FILTERS_KEY, JSON.stringify(filters)); } catch (e) { /* ignore */ }
+  }
+
+  applyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Read emirates
+    filters.emirates = Array.from(emirateSel.selectedOptions).map(o => o.value);
+    // Gas
+    filters.gasSensor = gasSel.value || '';
+    // Threshold statuses
+    const ts = [];
+    if (thMin.checked) ts.push('Min Alarm');
+    if (thMax.checked) ts.push('Max Alarm');
+    if (thNorm.checked) ts.push('Normal Range');
+    filters.thresholdStatuses = ts;
+    // Capacity
+    filters.capacityMin = capMinEl.value;
+    filters.capacityMax = capMaxEl.value;
+    // Tank types & installs
+    filters.tankTypes = Array.from(typeSel.selectedOptions).map(o => o.value);
+    filters.installTypes = Array.from(installSel.selectedOptions).map(o => o.value);
+
+    persistFilters();
+    currentListPage = 1;
+    renderListView();
+    fltMsg.textContent = 'Filters applied';
+    setTimeout(() => { fltMsg.textContent = ''; }, 1400);
+  });
+
+  clearBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    filters = { ...defaultFilters };
+    persistFilters();
+    currentListPage = 1;
+    renderListView();
+  });
+
+  // Build table header
   const table = document.createElement('table');
   table.className = 'list-table';
   table.setAttribute('role', 'table');
@@ -3023,60 +3459,66 @@ function renderListView() {
 
   const tbody = document.createElement('tbody');
 
-  // Determine slice for current page
+  // Determine slice for current page using filtered list
   const startIndex = (currentListPage - 1) * PAGE_SIZE;
-  const pageDevices = devices.slice(startIndex, startIndex + PAGE_SIZE);
+  const pageDevices = filteredDevices.slice(startIndex, startIndex + PAGE_SIZE);
 
-  pageDevices.forEach(device => {
-    const tr = document.createElement('tr');
-    tr.className = 'list-row';
-    tr.dataset.terminal = device.id;
+  if (!pageDevices.length) {
+    const trEmpty = document.createElement('tr');
+    trEmpty.innerHTML = `<td colspan="8" style="padding:14px;color:var(--muted);text-align:center;">No devices match the current filters.</td>`;
+    tbody.appendChild(trEmpty);
+  } else {
+    pageDevices.forEach(device => {
+      const tr = document.createElement('tr');
+      tr.className = 'list-row';
+      tr.dataset.terminal = device.id;
 
-    // Compute last known numeric value
-    let numeric = null;
-    if (device._lastValueNumeric !== undefined) {
-      numeric = device._lastValueNumeric;
-    } else if (device._lastValue !== undefined) {
-      numeric = parsePercent(device._lastValue);
-    } else {
-      // try to read from card DOM if present
-      const card = document.querySelector(`.tank-card[data-terminal="${device.id}"]`);
-      if (card) {
-        const valEl = card.querySelector('.value');
-        if (valEl) numeric = parsePercent(valEl.textContent || valEl.innerText);
+      // Compute last known numeric value
+      let numeric = null;
+      if (device._lastValueNumeric !== undefined) {
+        numeric = device._lastValueNumeric;
+      } else if (device._lastValue !== undefined) {
+        numeric = parsePercent(device._lastValue);
+      } else {
+        // try to read from card DOM if present
+        const card = document.querySelector(`.tank-card[data-terminal="${device.id}"]`);
+        if (card) {
+          const valEl = card.querySelector('.value');
+          if (valEl) numeric = parsePercent(valEl.textContent || valEl.innerText);
+        }
       }
-    }
 
-    const statusClass = getStatusClassForValue(numeric, device);
-    const displayPct = (numeric == null || isNaN(numeric)) ? 'N/A' : `${Math.round(numeric)}%`;
-    const fillWidth = (numeric == null || isNaN(numeric)) ? 0 : Math.max(0, Math.min(100, Math.round(numeric)));
+      const statusClass = getStatusClassForValue(numeric, device);
+      const displayPct = (numeric == null || isNaN(numeric)) ? 'N/A' : `${Math.round(numeric)}%`;
+      const fillWidth = (numeric == null || isNaN(numeric)) ? 0 : Math.max(0, Math.min(100, Math.round(numeric)));
 
-    const projectCell = `<td class="list-project">${escapeHtml(device.title || device.name || '')}</td>`;
-    const projectCodeCell = `<td class="list-project-code">${escapeHtml(device.project_code || '')}</td>`;
-    const serialCell = `<td class="list-serial">${escapeHtml(device.sn || '')}</td>`;
-    const emirateCell = `<td class="list-emirate">${escapeHtml(device.emirate || '')}</td>`;
-    const locationCell = `<td class="list-location">${escapeHtml(device.site || '')}</td>`;
-    const levelCell = `
-      <td class="list-level">
-        <div class="list-level-bar ${statusClass}">
-          <div class="list-level-fill" style="width:${fillWidth}%;"></div>
-        </div>
-        <div class="list-level-label">${escapeHtml(displayPct)}</div>
-      </td>
-    `;
-    const capacityDisplay = device.lpg_tank_capacity ? String(device.lpg_tank_capacity) : '—';
-    const capacityCell = `<td class="list-capacity">${escapeHtml(capacityDisplay)}</td>`;
-    const actionsCell = `
-      <td class="list-actions" style="text-align:right;">
-        <button class="btn list-info" data-terminal="${escapeHtml(device.id)}">Device Info</button>
-        <button class="btn list-history" data-terminal="${escapeHtml(device.id)}">History</button>
-        <button class="btn list-map" data-terminal="${escapeHtml(device.id)}">Map</button>
-      </td>
-    `;
+      const projectCell = `<td class="list-project">${escapeHtml(getProjectName(device))}</td>`;
+      const projectCodeCell = `<td class="list-project-code">${escapeHtml(device.project_code || '')}</td>`;
+      const serialCell = `<td class="list-serial">${escapeHtml(device.sn || '')}</td>`;
+      const emirateCell = `<td class="list-emirate">${escapeHtml(device.emirate || '')}</td>`;
+      const locationCell = `<td class="list-location">${escapeHtml(device.site || '')}</td>`;
+      const levelCell = `
+        <td class="list-level">
+          <div class="list-level-bar ${statusClass}">
+            <div class="list-level-fill" style="width:${fillWidth}%;"></div>
+          </div>
+          <div class="list-level-label">${escapeHtml(displayPct)}</div>
+        </td>
+      `;
+      const capacityDisplay = device.lpg_tank_capacity ? String(device.lpg_tank_capacity) : '—';
+      const capacityCell = `<td class="list-capacity">${escapeHtml(capacityDisplay)}</td>`;
+      const actionsCell = `
+        <td class="list-actions" style="text-align:right;">
+          <button class="btn list-info" data-terminal="${escapeHtml(device.id)}">Device Info</button>
+          <button class="btn list-history" data-terminal="${escapeHtml(device.id)}">History</button>
+          <button class="btn list-map" data-terminal="${escapeHtml(device.id)}">Map</button>
+        </td>
+      `;
 
-    tr.innerHTML = projectCell + projectCodeCell + serialCell + emirateCell + locationCell + levelCell + capacityCell + actionsCell;
-    tbody.appendChild(tr);
-  });
+      tr.innerHTML = projectCell + projectCodeCell + serialCell + emirateCell + locationCell + levelCell + capacityCell + actionsCell;
+      tbody.appendChild(tr);
+    });
+  }
 
   table.appendChild(tbody);
   container.appendChild(table);
@@ -3095,7 +3537,7 @@ function renderListView() {
       </button>
     </div>
     <div class="pagination-right" style="margin-left:auto;color:var(--muted);font-size:13px;">
-      <span>${devices.length} devices</span>
+      <span>${filteredDevices.length} devices</span>
     </div>
   `;
   container.appendChild(paginationWrap);
@@ -3198,7 +3640,7 @@ function updateListRow(device) {
 
   // update location, project name, project code, emirate and capacity if changed
   const projectCell = row.querySelector('.list-project');
-  if (projectCell) projectCell.textContent = device.title || device.name || '';
+  if (projectCell) projectCell.textContent = getProjectName(device);
   const projectCodeCell = row.querySelector('.list-project-code');
   if (projectCodeCell) projectCodeCell.textContent = device.project_code || '';
   const serialCell = row.querySelector('.list-serial');
@@ -3259,6 +3701,8 @@ async function init() {
           d.project_code = s.project_code || null;
           d.emirate = s.emirate || null;
           d.lpg_tank_capacity = s.lpg_tank_capacity || null;
+          d.lpg_tank_type = s.lpg_tank_type || null;
+          d.lpg_installation_type = s.lpg_tank_installation || s.lpg_installation_type || null;
         } else {
           d.lpg_min_level = d.lpg_min_level || null;
           d.lpg_max_level = d.lpg_max_level || null;

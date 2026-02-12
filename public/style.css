@@ -235,6 +235,11 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
 .status-green{ background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,0.25); }
 .status-orange{ background: var(--orange); box-shadow: 0 0 8px rgba(245,158,11,0.22); }
 .status-red{ background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,0.20); }
+/* Gray status for offline panel — make global to avoid conflicts */
+.status-gray {
+  background: #6b7280;
+  box-shadow: 0 0 8px rgba(107,116,128,0.25);
+}
 
 /* numeric value */
 .value{font-size:52px;font-weight:800;line-height:1;color:#fff; transition: color 180ms ease, transform 160ms ease;}
@@ -1229,23 +1234,17 @@ select.graph-title-input {
     flex-direction:column;
     align-items:flex-start;
   }
-.mini-card-lel .mini-item {
-  display:flex;
-  flex-direction:column;
-  gap:4px;
-  flex: 1 1 0;
-}
+  .mini-card-lel .mini-item {
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    flex: 1 1 0;
+  }
 
-/* Center the middle dot column more to the left */
-.mini-card-lel .mini-lel-dot {
-  margin-left: -30px;
-}
-
-/* Gray status for offline panel */
-.status-gray {
-  background: #6b7280;
-  box-shadow: 0 0 8px rgba(107,116,128,0.25);
-}
+  /* Center the middle dot column more to the left */
+  .mini-card-lel .mini-lel-dot {
+    /* margin-left removed to let script.js control inline positioning universally */
+  }
 }
 
 /* ==========================
