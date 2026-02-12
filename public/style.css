@@ -1211,8 +1211,8 @@ select.graph-title-input {
   justify-content:center;
 }
 .mini-card-lel .mini-lel-dot .status-dot {
-  width:14px;
-  height:14px;
+  width:24px;
+  height:24px;
   border-radius:50%;
   box-shadow: none;
 }
@@ -1229,12 +1229,23 @@ select.graph-title-input {
     flex-direction:column;
     align-items:flex-start;
   }
-  .mini-card-lel .mini-item {
-    width:100%;
-    flex-direction:row;
-    justify-content:space-between;
-    align-items:center;
-  }
+.mini-card-lel .mini-item {
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  flex: 1 1 0;
+}
+
+/* Center the middle dot column more to the left */
+.mini-card-lel .mini-lel-dot {
+  margin-left: -30px;
+}
+
+/* Gray status for offline panel */
+.status-gray {
+  background: #6b7280;
+  box-shadow: 0 0 8px rgba(107,116,128,0.25);
+}
 }
 
 /* ==========================

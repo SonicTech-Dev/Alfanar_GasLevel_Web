@@ -422,8 +422,8 @@ function createCard(device) {
         <div style="font-weight:700;color:var(--text);"><span class="lel-value">--</span>%</div>
       </div>
       <div class="mini-item mini-lel-dot" aria-hidden="false" style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;">
-        <span class="status-dot status-red" aria-hidden="true" title="LEL status" style="width:14px;height:14px;border-radius:50%;"></span>
-        <div class="lel-dot-label" style="font-size:12px;color:var(--muted);margin-top:6px;">Solenoid Off</div>
+        <span class="status-dot status-gray" aria-hidden="true" title="LEL status"></span>
+        <div class="lel-dot-label" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>
       </div>
       <div class="mini-item mini-panel-status" aria-label="Panel status" style="flex:1;display:flex;justify-content:flex-end;align-items:center;">
         <div class="panel-status-text" style="font-weight:700;color:var(--red);">Panel Offline</div>
@@ -745,9 +745,12 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
       const lelLabelEl = card.querySelector('.mini-lel-dot .lel-dot-label');
       const panelTextEl = card.querySelector('.panel-status-text');
 
-      // Left side: LEL% number
+      // Left side: LEL% number (hide if panel offline)
       if (lelValueEl) {
-        if (dev._realtime.lel === null || isNaN(dev._realtime.lel)) {
+        if (!dev._realtime.panelOnline) {
+          // Panel offline: hide LEL value
+          lelValueEl.textContent = '--';
+        } else if (dev._realtime.lel === null || isNaN(dev._realtime.lel)) {
           lelValueEl.textContent = 'N/A';
         } else {
           const v = Math.round(dev._realtime.lel * 10) / 10;
@@ -755,15 +758,24 @@ async function fetchAndUpdate(device, cardEl, showSpinner = false) {
         }
       }
 
-      // Middle: dot (COLOR AND LABEL DETERMINED SOLELY BY LEL VALUE)
-      // New behavior: independent of panelOnline. If LEL > 25 => RED + "Solenoid On" (red).
-      // Otherwise => GREEN + "Solenoid Off" (green). Unknown/missing LEL => mark red and "Solenoid Off" muted.
+      // Middle: dot (COLOR AND LABEL DETERMINED BY PANEL ONLINE STATUS AND LEL VALUE)
+      // If panel is OFFLINE => GRAY dot, no text
+      // If panel is ONLINE: LEL > 25 => RED + "Solenoid On", otherwise => GREEN + "Solenoid Off"
       if (lelDot) {
-        lelDot.classList.remove('status-green', 'status-red');
+        lelDot.classList.remove('status-green', 'status-red', 'status-gray');
         const lelNum = dev._realtime.lel;
+        const panelOnline = dev._realtime.panelOnline;
 
-        if (lelNum == null || isNaN(lelNum)) {
-          // Unknown: show red dot (indicates attention) and muted label
+        // Check if panel is offline first
+        if (!panelOnline) {
+          // Panel offline: gray dot, no label
+          lelDot.classList.add('status-gray');
+          if (lelLabelEl) {
+            lelLabelEl.textContent = '';
+            lelLabelEl.style.color = '';
+          }
+        } else if (lelNum == null || isNaN(lelNum)) {
+          // Panel online but LEL unknown: show red dot and muted label
           lelDot.classList.add('status-red');
           if (lelLabelEl) {
             lelLabelEl.textContent = 'Solenoid Off';
