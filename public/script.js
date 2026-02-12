@@ -29,18 +29,20 @@ try {
   if (savedSearch) listSearchQuery = String(savedSearch);
 } catch (e) { /* ignore */ }
 
-// Filters state for list view
+// Filters state for list view (updated: all dropdowns single-select where applicable)
 const FILTERS_KEY = 'tank_list_filters_v1';
 const defaultFilters = {
-  emirates: [],                                // array of selected emirates
-  thresholdStatuses: [],                       // 'min' | 'max' | 'normal'
-  gasSensor: '',                               // '' | 'online' | 'offline'
-  batteryBand: '',                             // '' | 'low' | 'normal' | 'full' | 'unknown'
-  gsmBand: '',                                 // '' | 'strong' | 'fair' | 'weak' | 'unknown'
-  capacityMin: '',                             // numeric or ''
-  capacityMax: '',                             // numeric or ''
-  tankTypes: [],                               // selected tank types
-  installTypes: []                             // 'A/G' | 'B/G'
+  emirate: '',                 // single select emirate
+  thresholdStatus: '',         // '' | 'min' | 'max' | 'normal'
+  gasSensor: '',               // '' | 'online' | 'offline'
+  batteryBand: '',             // '' | 'low' | 'normal' | 'full' | 'unknown'
+  gsmBand: '',                 // '' | 'strong' | 'fair' | 'weak' | 'unknown'
+  capacityBand: '',            // '' | 'lt500' | '500-1000' | '1000-2000' | 'gt2000'
+  tankType: '',                // '' | 'Spherical' | 'Cylindrical horizontal' | 'Cylindrical vertical'
+  installType: '',             // '' | 'A/G' | 'B/G'
+  // legacy keys kept for backward compatibility with previously saved state:
+  capacityMin: '', capacityMax: '',
+  emirates: [], thresholdStatuses: [], tankTypes: [], installTypes: []
 };
 let filters = { ...defaultFilters };
 try {
@@ -3077,22 +3079,40 @@ function setListPage(page) {
   renderListView();
 }
 
+function capacityBandMatches(band, capNum) {
+  if (band === '' || band === 'any') return true;
+  if (capNum == null || isNaN(capNum)) return false;
+  switch (band) {
+    case 'lt500': return capNum < 500;
+    case '500-1000': return capNum >= 500 && capNum <= 1000;
+    case '1000-2000': return capNum >= 1000 && capNum <= 2000;
+    case 'gt2000': return capNum > 2000;
+    default: return true;
+  }
+}
+
 function getFilteredDevices() {
   const q = (listSearchQuery || '').trim().toLowerCase();
   const list = devices.filter(d => {
     // Project Name search (prefix on title/name)
     if (q.length > 0 && !getProjectName(d).toLowerCase().startsWith(q)) return false;
 
-    // Emirate filter (multi)
-    if (filters.emirates && filters.emirates.length) {
+    // Emirate filter (single)
+    if (filters.emirate && filters.emirate !== '') {
+      const em = (d.emirate || '').trim();
+      if (em !== filters.emirate) return false;
+    } else if (filters.emirates && filters.emirates.length) {
+      // legacy multi-select
       const em = (d.emirate || '').trim();
       if (!filters.emirates.includes(em)) return false;
     }
 
-    // Threshold status ("Min Alarm, Max Alarm, Normal Range")
-    if (filters.thresholdStatuses && filters.thresholdStatuses.length) {
-      const st = thresholdStatusForDevice(d); // 'min' | 'max' | 'normal' | 'unknown'
-      // map display to keys
+    // Threshold status (single)
+    if (filters.thresholdStatus && filters.thresholdStatus !== '') {
+      const st = thresholdStatusForDevice(d);
+      if (st !== filters.thresholdStatus) return false;
+    } else if (filters.thresholdStatuses && filters.thresholdStatuses.length) {
+      const st = thresholdStatusForDevice(d);
       const selectedKeys = filters.thresholdStatuses.map(x => (x === 'Min Alarm' ? 'min' : x === 'Max Alarm' ? 'max' : x === 'Normal Range' ? 'normal' : ''));
       if (!selectedKeys.includes(st)) return false;
     }
@@ -3103,20 +3123,24 @@ function getFilteredDevices() {
       if (gs !== filters.gasSensor) return false;
     }
 
-    // Battery band
+    // Battery band (single)
     if (filters.batteryBand && filters.batteryBand !== '') {
       const bb = batteryBandForDevice(d);
       if (bb !== filters.batteryBand) return false;
     }
 
-    // GSM band
+    // GSM band (single)
     if (filters.gsmBand && filters.gsmBand !== '') {
       const gb = gsmBandForDevice(d);
       if (gb !== filters.gsmBand) return false;
     }
 
-    // Capacity range
-    if ((filters.capacityMin && String(filters.capacityMin).trim() !== '') || (filters.capacityMax && String(filters.capacityMax).trim() !== '')) {
+    // Capacity band (single)
+    if (filters.capacityBand && filters.capacityBand !== '') {
+      const cap = parseCapacityNumeric(d.lpg_tank_capacity);
+      if (!capacityBandMatches(filters.capacityBand, cap)) return false;
+    } else if ((filters.capacityMin && String(filters.capacityMin).trim() !== '') || (filters.capacityMax && String(filters.capacityMax).trim() !== '')) {
+      // legacy min/max
       const cap = parseCapacityNumeric(d.lpg_tank_capacity);
       const min = filters.capacityMin && String(filters.capacityMin).trim() !== '' ? Number(filters.capacityMin) : null;
       const max = filters.capacityMax && String(filters.capacityMax).trim() !== '' ? Number(filters.capacityMax) : null;
@@ -3125,14 +3149,20 @@ function getFilteredDevices() {
       if (max != null && !isNaN(max) && cap > max) return false;
     }
 
-    // Tank type (multi)
-    if (filters.tankTypes && filters.tankTypes.length) {
+    // Tank type (single)
+    if (filters.tankType && filters.tankType !== '') {
+      const tt = (d.lpg_tank_type || '').trim();
+      if (tt !== filters.tankType) return false;
+    } else if (filters.tankTypes && filters.tankTypes.length) {
       const tt = (d.lpg_tank_type || '').trim();
       if (!filters.tankTypes.includes(tt)) return false;
     }
 
-    // Installation type (multi)
-    if (filters.installTypes && filters.installTypes.length) {
+    // Installation type (single)
+    if (filters.installType && filters.installType !== '') {
+      const it = (d.lpg_installation_type || '').trim();
+      if (it !== filters.installType) return false;
+    } else if (filters.installTypes && filters.installTypes.length) {
       const it = (d.lpg_installation_type || '').trim();
       if (!filters.installTypes.includes(it)) return false;
     }
@@ -3145,6 +3175,183 @@ function getFilteredDevices() {
 function getTotalPages() {
   const filtered = getFilteredDevices();
   return Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+}
+
+// Professional Filters Modal — all dropdowns
+function showFiltersModal() {
+  const modal = document.createElement('div');
+  modal.className = 'history-modal';
+  modal.innerHTML = `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="Filter devices">
+      <div class="history-actions">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong>Filters</strong>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="history-controls">
+            <button class="btn filters-apply" type="button">Apply</button>
+            <button class="btn filters-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear All</button>
+            <button class="history-close" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;">
+        <div>
+          <label style="font-size:13px;color:var(--muted);">Emirate</label>
+          <select id="fltM-emirate" class="graph-title-input">
+            <option value="">Any</option>
+            <option value="Abu Dhabi">Abu Dhabi</option>
+            <option value="Ajman">Ajman</option>
+            <option value="Dubai">Dubai</option>
+            <option value="Fujairah">Fujairah</option>
+            <option value="Ras Al Khaimah">Ras Al Khaimah</option>
+            <option value="Sharjah">Sharjah</option>
+            <option value="Umm Al Quwain">Umm Al Quwain</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:13px;color:var(--muted);">Threshold Status</label>
+          <select id="fltM-threshold" class="graph-title-input">
+            <option value="">Any</option>
+            <option value="min">Min Alarm</option>
+            <option value="max">Max Alarm</option>
+            <option value="normal">Normal Range</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:13px;color:var(--muted);">GSM</label>
+          <select id="fltM-gsm" class="graph-title-input">
+            <option value="">Any</option>
+            <option value="strong">Strong (&gt;70%)</option>
+            <option value="fair">Fair (30–70%)</option>
+            <option value="weak">Weak (&lt;30%)</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:13px;color:var(--muted);">LPG Tank Type</label>
+          <select id="fltM-type" class="graph-title-input">
+            <option value="">Any</option>
+            <option value="Spherical">Spherical</option>
+            <option value="Cylindrical horizontal">Cylindrical horizontal</option>
+            <option value="Cylindrical vertical">Cylindrical vertical</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:13px;color:var(--muted);">Gas Sensor Status</label>
+          <select id="fltM-gas" class="graph-title-input">
+            <option value="">Any</option>
+            <option value="online">Online</option>
+            <option value="offline">Offline</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:13px;color:var(--muted);">Battery Level</label>
+          <select id="fltM-battery" class="graph-title-input">
+            <option value="">Any</option>
+            <option value="full">Full (≥50%)</option>
+            <option value="normal">Normal (20–50%)</option>
+            <option value="low">Low (&lt;20%)</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:13px;color:var(--muted);">LPG Tank Capacity</label>
+          <select id="fltM-capacity" class="graph-title-input">
+            <option value="">Any</option>
+            <option value="lt500">&lt; 500</option>
+            <option value="500-1000">500–1000</option>
+            <option value="1000-2000">1000–2000</option>
+            <option value="gt2000">&gt; 2000</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:13px;color:var(--muted);">LPG Installation Type</label>
+          <select id="fltM-install" class="graph-title-input">
+            <option value="">Any</option>
+            <option value="A/G">A/G</option>
+            <option value="B/G">B/G</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="fltM-msg" class="history-msg" style="margin-top:12px;"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.body.classList.add('modal-open');
+
+  const closeBtn = modal.querySelector('.history-close');
+  const applyBtn = modal.querySelector('.filters-apply');
+  const clearBtn = modal.querySelector('.filters-clear');
+
+  const emirateSel = modal.querySelector('#fltM-emirate');
+  const thresholdSel = modal.querySelector('#fltM-threshold');
+  const gsmSel = modal.querySelector('#fltM-gsm');
+  const typeSel = modal.querySelector('#fltM-type');
+  const gasSel = modal.querySelector('#fltM-gas');
+  const batterySel = modal.querySelector('#fltM-battery');
+  const capacitySel = modal.querySelector('#fltM-capacity');
+  const installSel = modal.querySelector('#fltM-install');
+  const fltMsg = modal.querySelector('#fltM-msg');
+
+  function removeModal() {
+    modal.remove();
+    document.body.classList.remove('modal-open');
+  }
+
+  closeBtn.addEventListener('click', () => removeModal());
+  modal.addEventListener('click', (e) => { if (e.target === modal) removeModal(); });
+
+  // Initialize controls with current filter state (single-selects)
+  emirateSel.value = filters.emirate || '';
+  thresholdSel.value = filters.thresholdStatus || '';
+  gsmSel.value = filters.gsmBand || '';
+  typeSel.value = filters.tankType || '';
+  gasSel.value = filters.gasSensor || '';
+  batterySel.value = filters.batteryBand || '';
+  capacitySel.value = filters.capacityBand || '';
+  installSel.value = filters.installType || '';
+
+  function persistFilters() {
+    try { localStorage.setItem(FILTERS_KEY, JSON.stringify(filters)); } catch (e) { /* ignore */ }
+  }
+
+  applyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    filters.emirate = emirateSel.value || '';
+    filters.thresholdStatus = thresholdSel.value || '';
+    filters.gsmBand = gsmSel.value || '';
+    filters.tankType = typeSel.value || '';
+    filters.gasSensor = gasSel.value || '';
+    filters.batteryBand = batterySel.value || '';
+    filters.capacityBand = capacitySel.value || '';
+    filters.installType = installSel.value || '';
+
+    persistFilters();
+    currentListPage = 1;
+    renderListView();
+    fltMsg.textContent = 'Filters applied';
+    setTimeout(() => { fltMsg.textContent = ''; removeModal(); }, 800);
+  });
+
+  clearBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    filters = { ...defaultFilters };
+    persistFilters();
+    currentListPage = 1;
+    renderListView();
+    fltMsg.textContent = 'Filters cleared';
+    setTimeout(() => { fltMsg.textContent = ''; removeModal(); }, 800);
+  });
 }
 
 // Build the list table and populate it from devices[] and cached values
@@ -3162,18 +3369,28 @@ function renderListView() {
   // Clear container
   container.innerHTML = '';
 
-  // SEARCH UI (Project Name) with autocomplete suggestions
+  // SEARCH UI (Project Name) with autocomplete suggestions + quick "Open Filters" button
   const searchWrap = document.createElement('div');
   searchWrap.style.marginBottom = '10px';
   searchWrap.style.position = 'relative';
   searchWrap.innerHTML = `
-    <input id="list-search-input" class="graph-title-input" placeholder="Search by Project Name (min 3 chars)" value="${escapeHtml(listSearchQuery)}" aria-label="Search Project Name" style="min-width:280px;" />
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <input id="list-search-input" class="graph-title-input" placeholder="Search by Project Name (min 3 chars)" value="${escapeHtml(listSearchQuery)}" aria-label="Search Project Name" style="min-width:280px;" />
+      <button id="open-filters-inline" class="btn" type="button" title="Open Filters" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Filter…</button>
+    </div>
     <div id="list-search-suggest" class="dropdown" style="display:none; position:absolute; top:42px; left:0; min-width:280px; z-index:1300;"></div>
   `;
   container.appendChild(searchWrap);
 
   const inputEl = searchWrap.querySelector('#list-search-input');
   const suggestEl = searchWrap.querySelector('#list-search-suggest');
+  const openFiltersInlineBtn = searchWrap.querySelector('#open-filters-inline');
+  if (openFiltersInlineBtn) {
+    openFiltersInlineBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showFiltersModal();
+    });
+  }
 
   function allProjectNames() {
     const set = new Set(devices.map(getProjectName).filter(Boolean));
@@ -3238,202 +3455,6 @@ function renderListView() {
     if (!e.target.closest('#list-search-suggest') && e.target !== inputEl) {
       suggestEl.style.display = 'none';
     }
-  });
-
-  // FILTERS BAR
-  const filtersBar = document.createElement('div');
-  filtersBar.style.margin = '8px 0 12px 0';
-  filtersBar.style.display = 'grid';
-  filtersBar.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
-  filtersBar.style.gap = '10px 16px';
-  filtersBar.innerHTML = `
-    <div>
-      <label style="font-size:13px;color:var(--muted);">Emirate</label>
-      <select id="flt-emirate" class="graph-title-input" multiple size="4">
-        <option value="Abu Dhabi">Abu Dhabi</option>
-        <option value="Ajman">Ajman</option>
-        <option value="Dubai">Dubai</option>
-        <option value="Fujairah">Fujairah</option>
-        <option value="Ras Al Khaimah">Ras Al Khaimah</option>
-        <option value="Sharjah">Sharjah</option>
-        <option value="Umm Al Quwain">Umm Al Quwain</option>
-      </select>
-    </div>
-
-    <div>
-      <label style="font-size:13px;color:var(--muted);">Gas Sensor Status</label>
-      <select id="flt-gas" class="graph-title-input">
-        <option value="">Any</option>
-        <option value="online">Online</option>
-        <option value="offline">Offline</option>
-      </select>
-    </div>
-
-    <div>
-      <label style="font-size:13px;color:var(--muted);">Threshold Status</label>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
-        <label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="flt-th-min" /> <span>Min Alarm</span></label>
-        <label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="flt-th-max" /> <span>Max Alarm</span></label>
-        <label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="flt-th-norm" /> <span>Normal Range</span></label>
-      </div>
-    </div>
-
-    <div>
-      <label style="font-size:13px;color:var(--muted);">Battery</label>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
-        <button class="btn flt-batt" data-val="">Any</button>
-        <button class="btn flt-batt" data-val="low">Low (&lt;20%)</button>
-        <button class="btn flt-batt" data-val="normal">Normal (20–50%)</button>
-        <button class="btn flt-batt" data-val="full">Full (≥50%)</button>
-        <button class="btn flt-batt" data-val="unknown">Unknown</button>
-      </div>
-    </div>
-
-    <div>
-      <label style="font-size:13px;color:var(--muted);">GSM</label>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
-        <button class="btn flt-gsm" data-val="">Any</button>
-        <button class="btn flt-gsm" data-val="strong">Strong (&gt;70%)</button>
-        <button class="btn flt-gsm" data-val="fair">Fair (30–70%)</button>
-        <button class="btn flt-gsm" data-val="weak">Weak (&lt;30%)</button>
-        <button class="btn flt-gsm" data-val="unknown">Unknown</button>
-      </div>
-    </div>
-
-    <div>
-      <label style="font-size:13px;color:var(--muted);">LPG Tank Capacity</label>
-      <div style="display:flex;gap:8px;margin-top:6px;">
-        <input id="flt-cap-min" class="graph-title-input" placeholder="Min" value="${escapeHtml(String(filters.capacityMin || ''))}" />
-        <input id="flt-cap-max" class="graph-title-input" placeholder="Max" value="${escapeHtml(String(filters.capacityMax || ''))}" />
-      </div>
-    </div>
-
-    <div>
-      <label style="font-size:13px;color:var(--muted);">LPG Tank Type</label>
-      <select id="flt-type" class="graph-title-input" multiple size="4">
-        <option value="Spherical">Spherical</option>
-        <option value="Cylindrical horizontal">Cylindrical horizontal</option>
-        <option value="Cylindrical vertical">Cylindrical vertical</option>
-      </select>
-    </div>
-
-    <div>
-      <label style="font-size:13px;color:var(--muted);">LPG Installation Type</label>
-      <select id="flt-install" class="graph-title-input" multiple size="3">
-        <option value="A/G">A/G</option>
-        <option value="B/G">B/G</option>
-      </select>
-    </div>
-
-    <div style="grid-column: 1 / -1; display:flex; gap:10px; align-items:center; margin-top:6px;">
-      <button id="flt-apply" class="btn" type="button">Apply Filters</button>
-      <button id="flt-clear" class="btn" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear All</button>
-      <span id="flt-msg" style="color:var(--muted);font-size:13px;"></span>
-    </div>
-  `;
-  container.appendChild(filtersBar);
-
-  // Initialize filter controls with current state
-  const emirateSel = filtersBar.querySelector('#flt-emirate');
-  const gasSel = filtersBar.querySelector('#flt-gas');
-  const thMin = filtersBar.querySelector('#flt-th-min');
-  const thMax = filtersBar.querySelector('#flt-th-max');
-  const thNorm = filtersBar.querySelector('#flt-th-norm');
-  const battBtns = Array.from(filtersBar.querySelectorAll('.flt-batt'));
-  const gsmBtns = Array.from(filtersBar.querySelectorAll('.flt-gsm'));
-  const capMinEl = filtersBar.querySelector('#flt-cap-min');
-  const capMaxEl = filtersBar.querySelector('#flt-cap-max');
-  const typeSel = filtersBar.querySelector('#flt-type');
-  const installSel = filtersBar.querySelector('#flt-install');
-  const applyBtn = filtersBar.querySelector('#flt-apply');
-  const clearBtn = filtersBar.querySelector('#flt-clear');
-  const fltMsg = filtersBar.querySelector('#flt-msg');
-
-  // Set emirate selections
-  try {
-    Array.from(emirateSel.options).forEach(opt => {
-      if (filters.emirates.includes(opt.value)) opt.selected = true;
-    });
-  } catch (e) { /* ignore */ }
-
-  // Set gas sensor
-  gasSel.value = filters.gasSensor || '';
-
-  // Set threshold checkboxes
-  thMin.checked = filters.thresholdStatuses.includes('Min Alarm');
-  thMax.checked = filters.thresholdStatuses.includes('Max Alarm');
-  thNorm.checked = filters.thresholdStatuses.includes('Normal Range');
-
-  // Highlight selected battery button
-  battBtns.forEach(btn => {
-    const selected = (btn.dataset.val || '') === (filters.batteryBand || '');
-    btn.style.boxShadow = selected ? '0 12px 30px rgba(3,7,18,0.55)' : '';
-    btn.style.transform = selected ? 'translateY(-2px)' : '';
-  });
-  // Highlight selected GSM button
-  gsmBtns.forEach(btn => {
-    const selected = (btn.dataset.val || '') === (filters.gsmBand || '');
-    btn.style.boxShadow = selected ? '0 12px 30px rgba(3,7,18,0.55)' : '';
-    btn.style.transform = selected ? 'translateY(-2px)' : '';
-  });
-
-  // Wire battery buttons
-  battBtns.forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      filters.batteryBand = btn.dataset.val || '';
-      battBtns.forEach(b => { b.style.boxShadow = ''; b.style.transform = ''; });
-      btn.style.boxShadow = '0 12px 30px rgba(3,7,18,0.55)';
-      btn.style.transform = 'translateY(-2px)';
-    });
-  });
-  // Wire GSM buttons
-  gsmBtns.forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      filters.gsmBand = btn.dataset.val || '';
-      gsmBtns.forEach(b => { b.style.boxShadow = ''; b.style.transform = ''; });
-      btn.style.boxShadow = '0 12px 30px rgba(3,7,18,0.55)';
-      btn.style.transform = 'translateY(-2px)';
-    });
-  });
-
-  function persistFilters() {
-    try { localStorage.setItem(FILTERS_KEY, JSON.stringify(filters)); } catch (e) { /* ignore */ }
-  }
-
-  applyBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    // Read emirates
-    filters.emirates = Array.from(emirateSel.selectedOptions).map(o => o.value);
-    // Gas
-    filters.gasSensor = gasSel.value || '';
-    // Threshold statuses
-    const ts = [];
-    if (thMin.checked) ts.push('Min Alarm');
-    if (thMax.checked) ts.push('Max Alarm');
-    if (thNorm.checked) ts.push('Normal Range');
-    filters.thresholdStatuses = ts;
-    // Capacity
-    filters.capacityMin = capMinEl.value;
-    filters.capacityMax = capMaxEl.value;
-    // Tank types & installs
-    filters.tankTypes = Array.from(typeSel.selectedOptions).map(o => o.value);
-    filters.installTypes = Array.from(installSel.selectedOptions).map(o => o.value);
-
-    persistFilters();
-    currentListPage = 1;
-    renderListView();
-    fltMsg.textContent = 'Filters applied';
-    setTimeout(() => { fltMsg.textContent = ''; }, 1400);
-  });
-
-  clearBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    filters = { ...defaultFilters };
-    persistFilters();
-    currentListPage = 1;
-    renderListView();
   });
 
   // Build table header
@@ -3935,3 +3956,6 @@ try {
   // Non-fatal; init() will attempt to set up again during init.
   console.warn('Early setupViewToggle failed (will try again during init):', err && err.message);
 }
+
+// Note: Removed the always-visible header Filter button wiring per request.
+// The Filters modal can be opened via the inline "Filter…" button in the list view search area.
