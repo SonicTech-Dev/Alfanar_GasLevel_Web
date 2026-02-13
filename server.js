@@ -50,6 +50,26 @@ app.use(express.static(path.join(__dirname, 'public')));
 // parse JSON bodies (used by several endpoints including login-attempt)
 app.use(express.json());
 
+/* Serve Document.html when visiting /Document-Tracker */
+app.get('/Document-Tracker', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'Document.html'));
+});
+
+/* Optional: redirect old URL to new path */
+app.get('/Document.html', (req, res) => {
+  res.redirect(301, '/Document-Tracker');
+});
+
+/* Serve Dashboard at /dashboard */
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
+
+/* Optional: redirect old filename to the friendly path */
+app.get('/dashboard.html', (req, res) => {
+  res.redirect(301, '/dashboard');
+});
+
 /* Ensure login_attempts table exists */
 async function createLoginAttemptsTableIfNeeded() {
   const createSql = `
@@ -310,6 +330,21 @@ function normalizeDbTimestampToIso(val) {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+/* Helper: Normalize serial number (SN) to ensure it always starts with uppercase "ZN".
+   Examples:
+   - "000000096233" => "ZN000000096233"
+   - "zn000000096233" => "ZN000000096233"
+   - "ZN000000096233" => "ZN000000096233"
+*/
+function normalizeSn(sn) {
+  const raw = String(sn || '').trim();
+  if (!raw) return null;
+  if (raw.toUpperCase().startsWith('ZN')) {
+    return 'ZN' + raw.slice(2);
+  }
+  return 'ZN' + raw;
+}
+
 /* New: perform a SOAP fetch and return a normalized reading object.
    Accepts optional variableName (default 'LIVELLO').
    Returns:
@@ -372,7 +407,11 @@ async function getTankReading(terminalId, variableName = 'LIVELLO') {
   const timestampIso = validateTimestamp(timestampRaw);
 
   const idField = terminalTopId || terminalId;
-  const snField = terminalTopName || extractField(target, ['SerialNumber','Serial','Name','NAME']);
+  const snField = infoTerminal ? nodeText(infoTerminal.Name || infoTerminal.name) : extractField(target, ['SerialNumber','Serial','Name','NAME']);
+
+  // Normalize SN to always include "ZN" prefix (uppercase)
+  const snNormalized = normalizeSn(snField);
+
   const numericValue = parseNumericValue(rawValue);
 
   // If variable is BATT and numericValue present, compute a rounded percent using linear map 3.35->0, 3.55->100
@@ -396,7 +435,7 @@ async function getTankReading(terminalId, variableName = 'LIVELLO') {
 
   return {
     idVal: idField,
-    snVal: snField,
+    snVal: snNormalized, // normalized SN
     numericLevelVal: numericValue,
     timestampVal: timestampIso,
     rawValue,
@@ -415,7 +454,7 @@ async function insertReading(client, reading) {
   `;
   await client.query(query, [
     reading.idVal,
-    reading.snVal,
+    reading.snVal, // already normalized to include "ZN"
     reading.numericLevelVal,
     reading.timestampVal,
   ]);
@@ -985,7 +1024,7 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
         lpg_tank_capacity: row.lpg_tank_capacity,
         lpg_tank_details: row.lpg_tank_details,
         lpg_tank_type: row.lpg_tank_type,
-        lpg_installation_type: row.lpg_installation_type,
+        lpg_installation_type: row.lpg_tank_installation || row.lpg_installation_type,
         notes: row.notes || null,
         lpg_min_level: row.lpg_min_level === null || row.lpg_min_level === undefined ? null : Number(row.lpg_min_level),
         lpg_max_level: row.lpg_max_level === null || row.lpg_max_level === undefined ? null : Number(row.lpg_max_level),
@@ -1080,20 +1119,21 @@ app.post('/api/sites', express.json(), async (req, res) => {
    GET /api/tank-sns -> returns { count, rows: [{ sn }, ... ] }
    GET /api/tank-by-sn?sn=... -> returns { terminal_id, sn } or 404
 
-   NOTE: To avoid exposing terminal IDs in the dropdown label we return only the SN values
-         from /api/tank-sns; the client will resolve the terminal ID using /api/tank-by-sn when needed.
+   NOTE: To avoid exposing terminal IDs in the dropdown label we return only the SN values.
+         Additionally, we now:
+         - filter to SNs that start with "ZN" (case-insensitive)
+         - normalize to uppercase (ZN…) and deduplicate via DISTINCT ON (UPPER(sn))
 */
 app.get('/api/tank-sns', async (req, res) => {
   try {
     const client = await pool.connect();
     try {
-      // Use DISTINCT ON to pick the latest row for each SN.
-      // Return only the SN value so the UI does not display terminal IDs.
+      // Return only ZN-prefixed SNs, normalize to uppercase, and deduplicate
       const q = `
-        SELECT DISTINCT ON (sn) sn
+        SELECT DISTINCT ON (UPPER(sn)) UPPER(sn) AS sn
         FROM tank_level
-        WHERE sn IS NOT NULL AND sn <> ''
-        ORDER BY sn, "current_timestamp" DESC
+        WHERE sn IS NOT NULL AND sn <> '' AND sn ILIKE 'ZN%'
+        ORDER BY UPPER(sn), "current_timestamp" DESC
       `;
       const r = await client.query(q);
       const rows = (r.rows || []).map(row => ({
@@ -1116,15 +1156,17 @@ app.get('/api/tank-by-sn', async (req, res) => {
 
     const client = await pool.connect();
     try {
-      // Find the most recent entry for this SN to determine the terminal id
+      // Find the most recent entry for this SN to determine the terminal id.
+      // Normalize incoming sn to uppercase to match the /api/tank-sns output.
+      const normalizedSn = (sn.toUpperCase().startsWith('ZN') ? ('ZN' + sn.slice(2)) : ('ZN' + sn.toUpperCase()));
       const q = `
         SELECT id AS terminal_id, sn, "current_timestamp" AS ts
         FROM tank_level
-        WHERE sn = $1
+        WHERE UPPER(sn) = UPPER($1)
         ORDER BY "current_timestamp" DESC
         LIMIT 1
       `;
-      const r = await client.query(q, [sn]);
+      const r = await client.query(q, [normalizedSn]);
       if (!r.rows || r.rows.length === 0) {
         return res.status(404).json({ error: 'not found' });
       }
@@ -1426,7 +1468,7 @@ try {
     });
 
     socket.on('error', (err) => {
-      console.warn('[io] socket error from', remote, err && err.message);
+      console.warn('Realtime socket error', err && err.message);
     });
   });
 } catch (err) {

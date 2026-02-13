@@ -167,13 +167,6 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
   box-shadow: 0 18px 40px rgba(2,6,23,0.55);
 }
 
-/* Selected card (keyboard) */
-.card.selected{
-  outline: none;
-  box-shadow: 0 22px 48px rgba(2,6,23,0.6);
-  transform: translateY(-6px) scale(1.02);
-}
-
 /* Grid for tanks — larger cards and spacing */
 .tanks-grid{
   display:grid;
@@ -182,11 +175,12 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
 }
 
 /*catd title*/
-
 .title-edit-wrap {
   margin-bottom: 8px;
 }
-.title-input {
+/* Read-only title text in card header (replaces editable input) */
+.title-text {
+  display: block;
   width: 100%;
   padding: 6px;
   border: 1px solid var(--background-muted, rgba(255,255,255,0.04));
@@ -194,6 +188,8 @@ body.modal-open > :not(.history-modal):not(.modal-dropdown):not(.login-modal) {
   background: var(--background-card, rgba(255,255,255,0.01));
   font-size: 14px;
   color: var(--text);
+  cursor: default;
+  user-select: text;
 }
 
 /* top row in card: name + spinner */

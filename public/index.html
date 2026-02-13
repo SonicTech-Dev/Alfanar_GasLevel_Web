@@ -83,6 +83,19 @@
 
       <!-- View toggle placed to the right of brand/legend area -->
       <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+        <!-- Documents button: clean, professional, matches existing header styling -->
+        <a href="/Document-Tracker" id="documents-btn" class="btn" role="button" title="Open Document Tracker" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);text-decoration:none;display:inline-flex;align-items:center;gap:8px;">
+          <!-- simple document icon + label -->
+          <span aria-hidden="true">📄</span>
+          <span>Documents</span>
+        </a>
+
+        <!-- NEW: Dashboard button -->
+        <a href="/dashboard" id="dashboard-btn" class="btn" role="button" title="Open Dashboard" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);text-decoration:none;display:inline-flex;align-items:center;gap:8px;">
+          <span aria-hidden="true">📊</span>
+          <span>Dashboard</span>
+        </a>
+
         <!-- The toggle uses the existing .btn style but is visually muted to fit the header -->
         <button id="toggle-view-btn" class="btn" type="button" aria-pressed="false" title="Toggle list/card view" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">
           <span id="toggle-view-icon" aria-hidden="true">☰</span>
@@ -267,7 +280,7 @@
       </div>
     </aside>
 <!-- User menu for normal (non-admin) users — hidden by default -->
-<div id="user-menu" style="display:none;margin-top:16px;padding:14px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005));border:1px solid rgba(255,255,255,0.04);box-shadow:0 12px 30px rgba(3,7,18,0.45);" role="region" aria-hidden="true">
+<div id="user-menu" style="display:none;margin-top:16px;padding:14px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005));border:1px solid rgba(255,255,255,0.04);box-shadow: 0 12px 30px rgba(3,7,18,0.45);" role="region" aria-hidden="true">
   <div style="display:flex;flex-direction:column;gap:8px;">
     <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
       <button id="user-open-all-map" class="btn" type="button">Show All Devices Map</button>

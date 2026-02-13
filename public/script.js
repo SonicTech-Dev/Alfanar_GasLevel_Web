@@ -14,7 +14,6 @@ const POLL_INTERVAL_MS = 20000;
 const tanksContainer = document.getElementById('tanks');
 const tanksListContainer = document.getElementById('tanks-list');
 const globalErrorEl = document.getElementById('global-error');
-const ORDER_KEY = 'tank_order_v1';
 
 // Pagination for list view
 const LIST_PAGE_KEY = 'tank_list_page_v1';
@@ -132,8 +131,6 @@ try {
   if (!isNaN(savedPage) && savedPage >= 1) currentListPage = savedPage;
 } catch (e) { /* ignore */ }
 
-let selectedCard = null; // for keyboard-only reordering
-
 // Simple auth helper (in-memory flag set by the login modal during this page load)
 function isLoggedIn() {
   try {
@@ -234,7 +231,7 @@ async function loadTitles() {
   }
 }
 
-// Allow users to edit titles and save to the server
+// Allow users to edit titles and save to the server (used by Device Information editor)
 async function saveTitle(terminalId, sn, title) {
   try {
     const body = { terminalId, title };
@@ -251,37 +248,6 @@ async function saveTitle(terminalId, sn, title) {
   } catch (err) {
     console.warn(`Failed to save title for terminal ${terminalId}:`, err.message);
     alert('Failed to save title. Please try again.');
-  }
-}
-
-// Try to restore saved order from localStorage
-function restoreDeviceOrder() {
-  try {
-    const raw = localStorage.getItem(ORDER_KEY);
-    if (!raw) return;
-    const order = JSON.parse(raw);
-    if (!Array.isArray(order)) return;
-    const map = new Map(devices.map(d => [d.id, d]));
-    const ordered = [];
-    for (const id of order) {
-      if (map.has(id)) {
-        ordered.push(map.get(id));
-        map.delete(id);
-      }
-    }
-    for (const d of devices) if (map.has(d.id)) ordered.push(d);
-    devices = ordered;
-  } catch (e) {
-    console.warn('Failed to restore order', e);
-  }
-}
-
-function persistDeviceOrder() {
-  try {
-    const ids = Array.from(document.querySelectorAll('.tank-card')).map(el => el.dataset.terminal);
-    localStorage.setItem(ORDER_KEY, JSON.stringify(ids));
-  } catch (e) {
-    console.warn('Failed to persist order', e);
   }
 }
 
@@ -428,14 +394,16 @@ function createCard(device) {
   const card = document.createElement('article');
   card.className = 'card tank-card';
   card.dataset.terminal = device.id;
-  card.tabIndex = 0; // make focusable so user can click/focus and use keyboard
+  card.tabIndex = 0; // keep focusable for accessibility (no reordering)
 
   // Ensure we have a serial cached
   if (!device.sn) device.sn = extractSnFromName(device.name);
 
   card.innerHTML = `
     <div class="title-edit-wrap">
-      <input type="text" class="title-input" placeholder="Tank Title" value="${escapeHtml(device.title || '')}" />
+      <div class="title-text" title="Tank Title (read-only; edit via Device Information)">
+        ${escapeHtml(device.title || '')}
+      </div>
     </div>
     <div class="card-top">
       <div class="device-name">${escapeHtml(device.name)}</div>
@@ -536,61 +504,10 @@ function createCard(device) {
     </div>
   `.trim();
 
-  // Title input behaviors:
-  const titleInput = card.querySelector('.title-input');
-
-  // Stop keyboard shortcuts (Space/Enter) from bubbling to the card when editing title
-  titleInput.addEventListener('keydown', (e) => {
-    // Allow typing space in the title; prevent card-level handlers
-    if (e.key === ' ' || e.key === 'Spacebar' || e.key === 'Enter') {
-      e.stopPropagation();
-    }
-    // If user presses Enter, commit edit by blurring (then save in 'blur' handler)
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      titleInput.blur();
-    }
-  });
-
-  // Save on blur (not on each keystroke); this avoids accidental saves on Space
-  titleInput.addEventListener('blur', async () => {
-    const newTitle = titleInput.value.trim();
-    if (newTitle && newTitle !== device.title) {
-      device.title = newTitle; // Update locally
-      await saveTitle(device.id, device.sn, newTitle); // Save to the server
-    }
-  });
-
-  // prevent the retry/refresh clicks from toggling selection
+  // prevent the retry/refresh clicks from bubbling unnecessarily
   card.querySelectorAll('button').forEach(b => {
     b.addEventListener('mousedown', e => e.stopPropagation());
     b.addEventListener('click', e => e.stopPropagation());
-  });
-
-  // click selects/deselects the card
-  card.addEventListener('click', (e) => {
-    e.preventDefault();
-    selectCard(card);
-  });
-
-  // keyboard shortcuts on card — ignore if the focused element is the title input (or any input/textarea)
-  card.addEventListener('keydown', (e) => {
-    const target = e.target;
-    const isEditableEl =
-      target.tagName === 'INPUT' ||
-      target.tagName === 'TEXTAREA' ||
-      target.isContentEditable ||
-      target.closest('.title-input');
-
-    if (isEditableEl) return; // do not hijack keyboard while editing text
-
-    if (e.key === ' ' || e.key === 'Spacebar') {
-      e.preventDefault();
-      selectCard(card);
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      selectCard(card);
-    }
   });
 
   // After building card, append location display (if available)
@@ -1166,7 +1083,7 @@ function refreshAll() {
   });
 }
 
-// Attach refresh and keyboard reorder handlers to cards
+// Attach refresh and other control handlers to cards
 function attachCardControls() {
   const cardEls = Array.from(document.querySelectorAll('.tank-card'));
   cardEls.forEach(cardEl => {
@@ -1214,96 +1131,6 @@ function attachCardControls() {
       });
     }
   });
-
-  enableKeyboardReorder();
-}
-
-// Keyboard-only reordering: click/select a card, then ArrowUp / ArrowDown to move
-function selectCard(cardEl) {
-  // deselect current if different
-  if (selectedCard && selectedCard !== cardEl) {
-    selectedCard.classList.remove('selected');
-  }
-  if (selectedCard === cardEl) {
-    // toggle off
-    selectedCard.classList.remove('selected');
-    selectedCard = null;
-    return;
-  }
-  selectedCard = cardEl;
-  selectedCard.classList.add('selected');
-  selectedCard.focus();
-}
-
-// Move the selected card up or down in the DOM and persist
-function moveSelected(direction) {
-  if (!selectedCard) return;
-  if (direction === 'up') {
-    const prev = selectedCard.previousElementSibling;
-    if (prev && prev.classList.contains('tank-card')) {
-      selectedCard.parentNode.insertBefore(selectedCard, prev);
-      reorderDevicesFromDOM();
-      persistDeviceOrder();
-      selectedCard.focus();
-    }
-  } else if (direction === 'down') {
-    const next = selectedCard.nextElementSibling;
-    if (next && next.classList.contains('tank-card')) {
-      selectedCard.parentNode.insertBefore(next, selectedCard);
-      reorderDevicesFromDOM();
-      persistDeviceOrder();
-      selectedCard.focus();
-    }
-  }
-}
-
-function enableKeyboardReorder() {
-  // Global key handler when a card is selected
-  document.addEventListener('keydown', (e) => {
-    if (!selectedCard) return;
-
-    // Do not intercept if the user is typing in any input/textarea/contenteditable
-    const active = document.activeElement;
-    const editing =
-      active &&
-      (active.tagName === 'INPUT' ||
-       active.tagName === 'TEXTAREA' ||
-       active.isContentEditable ||
-       active.classList.contains('title-input'));
-    if (editing) return;
-
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      moveSelected('up');
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      moveSelected('down');
-    } else if (e.key === 'Escape') {
-      // cancel selection
-      selectedCard.classList.remove('selected');
-      selectedCard = null;
-    } else if (e.key.toLowerCase() === 'r') {
-      // quick refresh when selected
-      const terminalId = selectedCard.dataset.terminal;
-      const device = devices.find(d => d.id === terminalId);
-      if (device) fetchAndUpdate(device, selectedCard, true);
-    }
-  });
-
-  // clicking outside any card deselects
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('.tank-card') && selectedCard) {
-      selectedCard.classList.remove('selected');
-      selectedCard = null;
-    }
-  });
-}
-
-function reorderDevicesFromDOM() {
-  const ids = Array.from(document.querySelectorAll('.tank-card')).map(el => el.dataset.terminal);
-  const map = new Map(devices.map(d => [d.id, d]));
-  devices = ids.map(id => map.get(id)).filter(Boolean);
-  try { localStorage.setItem(ORDER_KEY, JSON.stringify(ids)); } catch (e) { /* ignore */ }
 }
 
 /* ---------------------------
@@ -2003,6 +1830,7 @@ function buildDeviceInfoModalHtml(uniqueId) {
   // NEW: LPG Minimum Level and LPG Maximum Level inputs added
   // NEW: Alarm E-mail input added (now supports multiple comma or semicolon separated)
   // NEW: Project Code and Emirate fields added
+  // NEW: Tank Title field added (editable here only)
   return `
     <div class="history-panel" role="dialog" aria-modal="true" aria-label="Device Information">
       <div class="history-actions">
@@ -2027,6 +1855,10 @@ function buildDeviceInfoModalHtml(uniqueId) {
           <!-- NOTES textarea placed in bottom-left -->
           <label style="display:block;margin-top:12px;margin-bottom:6px;color:var(--muted);font-size:13px;">Notes</label>
           <textarea id="device-info-notes-${uniqueId}" class="graph-title-input" placeholder="Notes about this device" style="min-height:90px; width:100%; resize:vertical; padding:8px;"></textarea>
+
+          <!-- NEW: Tank Title (editable only in Device Information) -->
+          <label style="display:block;margin-top:12px;margin-bottom:6px;color:var(--muted);font-size:13px;">Tank Title</label>
+          <input id="device-info-title-${uniqueId}" class="graph-title-input" placeholder="Tank Title" />
         </div>
 
         <div style="flex:1 1 320px;min-width:280px;">
@@ -2062,7 +1894,7 @@ function buildDeviceInfoModalHtml(uniqueId) {
 
         <div style="flex:1 1 320px;min-width:280px;">
           <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Tank capacity</label>
-          <input id="device-info-capacity-${uniqueId}" class="graph-title-input" placeholder="LPG Tank capacity" />
+          <input id="device-info-capacity-${uniqueId}" class="graph-title-input" placeholder="LPG Tank capacity (Liters)" />
 
           <label style="display:block;margin-top:10px;margin-bottom:6px;color:var(--muted);font-size:13px;">LPG Tank details</label>
           <input id="device-info-details-${uniqueId}" class="graph-title-input" placeholder="LPG Tank details" />
@@ -2133,6 +1965,9 @@ function showDeviceInfoModal(initialSerial) {
   // NEW project code + emirate
   const projectCodeInput = modal.querySelector(`#device-info-project-${unique}`);
   const emirateSelect = modal.querySelector(`#device-info-emirate-${unique}`);
+
+  // NEW Tank Title input
+  const titleInput = modal.querySelector(`#device-info-title-${unique}`);
 
   // Helper: resolve a serial number to the current/most-recent terminal id via server API
   async function resolveTerminalIdFromSn(sn) {
@@ -2241,6 +2076,7 @@ function showDeviceInfoModal(initialSerial) {
         maxInput.value = '';
         projectCodeInput.value = '';
         emirateSelect.value = '';
+        titleInput.value = '';
         setTimeout(() => { msgEl.textContent = ''; }, 2200);
       }
     }
@@ -2271,8 +2107,12 @@ function showDeviceInfoModal(initialSerial) {
       projectCodeInput.value = info.project_code || '';
       emirateSelect.value = info.emirate || '';
 
-      // update in-memory device if exists
+      // populate Tank Title from in-memory device (loaded via /api/titles)
       const dev = devices.find(d => String(d.id) === String(tid));
+      const currentTitle = dev && dev.title ? String(dev.title) : '';
+      titleInput.value = currentTitle;
+
+      // update in-memory device if exists
       if (dev) {
         dev._info = info;
         dev.lpg_min_level = (info.lpg_min_level !== null && info.lpg_min_level !== undefined) ? Number(info.lpg_min_level) : null;
@@ -2303,6 +2143,7 @@ function showDeviceInfoModal(initialSerial) {
       maxInput.value = '';
       projectCodeInput.value = '';
       emirateSelect.value = '';
+      titleInput.value = '';
       if (err && /not found/i.test(err.message)) {
         msgEl.textContent = 'No saved info for that terminal yet.';
       } else {
@@ -2370,6 +2211,13 @@ function showDeviceInfoModal(initialSerial) {
       msgEl.style.color = 'var(--muted)';
       msgEl.textContent = 'Saving…';
       const saved = await saveTankInfo(payload);
+
+      // NEW: Save Tank Title via titles API
+      const newTitle = titleInput && titleInput.value ? String(titleInput.value).trim() : '';
+      if (newTitle) {
+        await saveTitle(resolvedTid, serial, newTitle);
+      }
+
       // update in-memory devices if terminal matches and maybe show feedback
       const dev = devices.find(d => String(d.id) === String(saved.terminal_id));
       if (dev) {
@@ -2382,6 +2230,16 @@ function showDeviceInfoModal(initialSerial) {
         dev.lpg_tank_capacity = saved.lpg_tank_capacity || null;
         dev.lpg_tank_type = saved.lpg_tank_type || null;
         dev.lpg_installation_type = saved.lpg_tank_installation || saved.lpg_installation_type || null;
+        if (newTitle) dev.title = newTitle;
+
+        // update card UI title text if present
+        const card = document.querySelector(`.tank-card[data-terminal="${saved.terminal_id}"]`);
+        if (card) {
+          const titleEl = card.querySelector('.title-text');
+          if (titleEl) titleEl.textContent = dev.title || '';
+        }
+        // update list row so Project Name reflects new title
+        updateListRow(dev);
       }
       msgEl.style.color = '#22c55e';
       msgEl.textContent = 'Saved.';
@@ -2869,7 +2727,6 @@ function showMapModal(terminalId, device) {
         marker.on('click', () => {
           const card = document.querySelector(`.tank-card[data-terminal="${terminalId}"]`);
           if (card) {
-            selectCard(card);
             try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { card.scrollIntoView(); }
           }
         });
@@ -2959,7 +2816,6 @@ async function showAllDevicesMap() {
         marker.on('click', () => {
           const card = document.querySelector(`.tank-card[data-terminal="${c.id}"]`);
           if (card) {
-            selectCard(card);
             try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { card.scrollIntoView(); }
           }
         });
@@ -3548,7 +3404,7 @@ function renderListView() {
   searchWrap.style.position = 'relative';
   searchWrap.innerHTML = `
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <input id="list-search-input" class="graph-title-input" placeholder="Search by Project Name (min 3 chars)" value="${escapeHtml(listSearchQuery)}" aria-label="Search Project Name" style="min-width:280px;" />
+      <input id="list-search-input" class="graph-title-input" placeholder="Search by Project Name" value="${escapeHtml(listSearchQuery)}" aria-label="Search Project Name" style="min-width:280px;" />
       <button id="open-filters-inline" class="btn" type="button" title="Open Filters" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Filter…</button>
     </div>
     <div id="list-search-suggest" class="dropdown" style="display:none; position:absolute; top:42px; left:0; min-width:280px; z-index:1300;"></div>
@@ -3908,9 +3764,6 @@ async function init() {
     console.warn('Failed to load tank info list during init', e && e.message);
   }
 
-  // Restore any saved order
-  restoreDeviceOrder();
-
   // Clear container
   tanksContainer.innerHTML = '';
 
@@ -3920,7 +3773,7 @@ async function init() {
     tanksContainer.appendChild(card);
   });
 
-  // Attach refresh button handlers and keyboard-only reorder handlers
+  // Attach refresh/history/info/map button handlers
   attachCardControls();
 
   // Initial fetch for all cards — show spinner for the first fetch only
@@ -3999,14 +3852,14 @@ async function init() {
           e.preventDefault();
           e.stopPropagation();
           const sel = document.getElementById('admin-device-select');
-          const terminalInput = document.getElementById('admin-terminal-id');
+          const terminalInputAdmin = document.getElementById('admin-terminal-id');
           const siteInput = document.getElementById('admin-site-name');
           const locInput = document.getElementById('admin-location-link');
           const latInput = document.getElementById('admin-lat');
           const lngInput = document.getElementById('admin-lng');
 
           // Prefer explicit terminal id, else selection
-          const chosenId = (terminalInput && terminalInput.value) ? String(terminalInput.value).trim() : (sel && sel.value ? sel.value : '');
+          const chosenId = (terminalInputAdmin && terminalInputAdmin.value) ? String(terminalInputAdmin.value).trim() : (sel && sel.value ? sel.value : '');
           if (!chosenId) {
             msgSpan.textContent = 'Terminal ID required (enter or pick a device).';
             msgSpan.style.color = '#ffdede';

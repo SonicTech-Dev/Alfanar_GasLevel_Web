@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Sonic Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- Reuse site theme tokens and styles -->
+  <link rel="stylesheet" href="style.css?v=2" />
+
+  <!-- Leaflet (same version used in the site) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    /* Page-specific layout (keeps theme/colors from style.css) */
+    .topbar {
+      min-height: 112px;
+      padding: 22px 24px;
+    }
+    .brand h1 { font-size: 26px; }
+
+    /* Dashboard layout: two columns on desktop, stacked on mobile */
+    .dashboard-container {
+      width: 100%;
+      max-width: 1200px;
+      margin: 24px auto 24px;
+      padding: 0 20px;
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .dashboard-container {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Panels use site card visuals */
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      background-color: var(--card);
+      border: 1px solid rgba(255,255,255,0.04);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-1);
+      padding: var(--card-padding);
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .panel-title {
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: .2px;
+      color: var(--text);
+    }
+    .panel-subtitle {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* Map panel */
+    #dashboard-map {
+      width: 100%;
+      height: 520px; /* Always-open map, taller for prominence */
+      border-radius: 10px;
+      overflow: hidden;
+      background: #eaeaea;
+      border: 1px solid rgba(255,255,255,0.02);
+    }
+
+    /* Alerts list */
+    .alerts-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 300px;
+      overflow: auto;
+      margin-top: 6px;
+    }
+    .alert-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005));
+      border: 1px solid rgba(255,255,255,0.03);
+    }
+    .alert-row .alert-left {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .alert-row .name {
+      font-weight: 700;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .alert-row .meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .alert-row .status {
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    /* Ensure text-only color for status labels (no background highlight) */
+    .dashboard-container .status-red {
+      background: transparent !important;
+      box-shadow: none !important;
+      color: var(--red) !important;
+    }
+    .dashboard-container .status-green {
+      background: transparent !important;
+      box-shadow: none !important;
+      color: var(--green) !important;
+    }
+    .dashboard-container .status-muted {
+      background: transparent !important;
+      box-shadow: none !important;
+      color: var(--muted) !important;
+    }
+
+    /* Alerts header count indicator */
+    .count-indicator {
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    /* Summary + Location row (two panels side-by-side on the right) */
+    .summary-row {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 12px;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .summary-row {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Summary table */
+    .summary-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .summary-table thead th {
+      text-align: left;
+      padding: 10px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .summary-table tbody td {
+      padding: 10px 10px;
+      border-top: 1px solid rgba(255,255,255,0.02);
+      vertical-align: middle;
+    }
+    .summary-table .label-cell {
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .summary-table .value-cell {
+      font-weight: 800;
+    }
+    .summary-table .value-green { color: var(--green); }
+    .summary-table .value-red { color: var(--red); }
+    .summary-table .value-muted { color: var(--muted); }
+
+    /* Location panel (kept within summary height with JS max-height) */
+    #location-panel { overflow: auto; }
+    .location-fields {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .loc-field .label {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .loc-field .value {
+      font-size: 14px;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .loc-empty {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 6px 0;
+    }
+
+    /* Location open button — compact and professional */
+    .loc-open-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.04);
+      background: rgba(255,255,255,0.02);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 12px;
+      box-shadow: none;
+    }
+    .loc-open-btn:hover { background: rgba(255,255,255,0.03); transform: translateY(-1px); }
+
+    /* Devices list */
+    .devices-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .devices-table thead th {
+      text-align: left;
+      padding: 10px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .devices-table tbody td {
+      padding: 10px 10px;
+      border-top: 1px solid rgba(255,255,255,0.02);
+      vertical-align: middle;
+    }
+    .devices-table .status-pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.04);
+      color: var(--text);
+    }
+    .devices-table .status-pill.min { color: var(--red); border-color: rgba(239,68,68,0.35); }
+    .devices-table .status-pill.max { color: var(--red); border-color: rgba(239,68,68,0.35); }
+    .devices-table .status-pill.normal { color: var(--green); border-color: rgba(34,197,94,0.35); }
+    .devices-table .muted { color: var(--muted); }
+
+    /* Header actions */
+    .header-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .header-actions .btn {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.04);
+      box-shadow: none;
+    }
+
+    /* Optional: subtle pulse when map marker scrolls to table row */
+    .pulse-row { animation: pulseRow 1s ease; }
+    @keyframes pulseRow {
+      0% { background-color: rgba(34,197,94,0.06); }
+      100% { background-color: transparent; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-with-logo">
+      <div class="header-logo" aria-hidden="true">
+        <img src="/static/logo.png" alt="Sonic logo" class="logo-img" />
+      </div>
+      <div class="brand">
+        <h1>Dashboard</h1>
+      </div>
+      <div class="header-actions">
+        <!-- Back to List and Back to Cards buttons -->
+        <button class="btn" id="back-list" type="button" title="Back to List view">↩ List</button>
+        <button class="btn" id="back-cards" type="button" title="Back to Cards view">↩ Cards</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="dashboard-container">
+    <!-- LEFT: Always-open Map -->
+    <section class="panel">
+      <div class="panel-header">
+        <div><div class="panel-title">Devices Map</div></div>
+        <div><span class="panel-subtitle" id="map-devices-count">0 devices</span></div>
+      </div>
+      <div id="dashboard-map"></div>
+      <div id="map-msg" class="history-msg" style="margin-top: 8px;"></div>
+    </section>
+
+    <!-- RIGHT: Alerts -->
+    <section class="panel" id="alerts-panel">
+      <div class="panel-header">
+        <div><div class="panel-title">Alerts</div></div>
+        <div><span class="count-indicator status-muted" id="alerts-count">0 ALERTS</span></div>
+      </div>
+      <div class="alerts-list" id="alerts-list"></div>
+    </section>
+
+    <!-- RIGHT: Summary + Location in one row -->
+    <section class="summary-row">
+      <!-- Summary panel -->
+      <section class="panel" id="summary-panel">
+        <div class="panel-header">
+          <div class="panel-title">Summary</div>
+        </div>
+        <table class="summary-table" role="table" aria-label="Summary of device states">
+          <thead>
+            <tr><th>Metric</th><th>Count</th></tr>
+          </thead>
+          <tbody id="summary-tbody">
+            <tr><td class="label-cell">Total devices</td><td class="value-cell value-muted" id="sum-total">0</td></tr>
+            <tr><td class="label-cell">Normal state</td><td class="value-cell value-green" id="sum-normal">0</td></tr>
+            <tr><td class="label-cell">Above Threshold</td><td class="value-cell value-red" id="sum-above">0</td></tr>
+            <tr><td class="label-cell">Under Threshold</td><td class="value-cell value-red" id="sum-under">0</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Location panel (kept below or equal to summary height) -->
+      <section class="panel" id="location-panel">
+        <div class="panel-header">
+          <div class="panel-title">Location</div>
+          <a class="loc-open-btn" id="loc-open-btn" target="_blank" rel="noopener" style="display:none;">
+            <!-- small pin icon -->
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2C8.686 2 6 4.686 6 8c0 4.5 6 12 6 12s6-7.5 6-12c0-3.314-2.686-6-6-6z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path><circle cx="12" cy="8" r="2.4" fill="currentColor"/></svg>
+            <span>Open</span>
+          </a>
+        </div>
+        <div class="location-fields" id="location-fields">
+          <div class="loc-empty" id="loc-empty">Select a device on the map to view location details.</div>
+
+          <div class="loc-field" style="display:none;">
+            <div class="label">Project Name</div>
+            <div class="value" id="loc-project-name">—</div>
+          </div>
+
+          <div class="loc-field" style="display:none;">
+            <div class="label">Project Code</div>
+            <div class="value" id="loc-project-code">—</div>
+          </div>
+
+          <div class="loc-field" style="display:none;">
+            <div class="label">Emirate</div>
+            <div class="value" id="loc-emirate">—</div>
+          </div>
+
+          <div class="loc-field" style="display:none;">
+            <div class="label">Building / Company name</div>
+            <div class="value" id="loc-building">—</div>
+          </div>
+
+          <div class="loc-field" style="display:none;">
+            <div class="label">Address</div>
+            <div class="value" id="loc-address">—</div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- FULL-WIDTH: Devices list -->
+    <section class="panel devices-panel" style="grid-column: 1 / -1;">
+      <div class="panel-header"><div><div class="panel-title">Devices</div></div></div>
+      <table class="devices-table" id="devices-table" role="table" aria-label="Devices list">
+        <thead>
+          <tr>
+            <th>Project Name</th>
+            <th>Project Code</th>
+            <th>Serial</th>
+            <th>Emirate</th>
+            <th>Tank Level</th>
+            <th>Status</th>
+            <th>Min / Max</th>
+          </tr>
+        </thead>
+        <tbody id="devices-tbody">
+          <tr><td colspan="7" class="muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>Powered by SONIC</span>
+  </footer>
+
+  <!-- Dashboard logic -->
+  <script src="dashboard.js"></script>
+</body>
+</html>

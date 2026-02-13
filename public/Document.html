@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Project Document Tracker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+<!-- Main site stylesheet to reuse theme tokens and shared styles -->
+<link rel="stylesheet" href="style.css?v=2" />
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+
+<style>
+/* Reset + dark theme base using site tokens */
+*{margin:0;padding:0;box-sizing:border-box}
+html, body { height: 100%; }
+body{
+  font-family: Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--text);
+  background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
+  background-attachment: fixed;
+  background-size: cover;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+
+/* Header - aligned with site aesthetic */
+.header{
+  background: transparent;
+  color: var(--text);
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  box-shadow: var(--shadow-1);
+}
+.header-content{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.header h1{font-size:22px;margin-bottom:4px;letter-spacing:.3px}
+.header p{font-size:12px;color:var(--muted)}
+.nav-buttons{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+/* Nav buttons styled similar to site .btn but muted */
+.nav-btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  height:36px;
+  padding:0 12px;
+  border-radius:8px;
+  background: transparent;
+  color: var(--text);
+  border:1px solid rgba(255,255,255,0.04);
+  cursor:pointer;
+  font-size:13px;
+  font-weight:700;
+  box-shadow:none;
+  transition: transform .12s ease, box-shadow .12s ease, background .12s ease, color .12s ease, border-color .12s ease;
+}
+.nav-btn:hover{ transform: translateY(-1px); background: rgba(255,255,255,0.02); }
+.nav-btn.active{ background: var(--accent); color: #041226; border-color: transparent; }
+.nav-btn:focus{ outline:2px solid rgba(99,102,241,0.18); }
+
+/* Back button aligned with site button style */
+.back-btn{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  height:36px;
+  padding:0 12px;
+  border-radius:8px;
+  background: transparent;
+  color: var(--text);
+  border:1px solid rgba(255,255,255,0.04);
+  text-decoration:none;
+  font-weight:700;
+  transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+}
+.back-btn:hover{ transform: translateY(-1px); background: rgba(255,255,255,0.02); }
+
+/* Screens */
+.screen{display:none}
+.screen.active{display:block}
+
+/* Dashboard area and cards in site theme */
+.dashboard{padding:20px;overflow-y:auto}
+.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;margin-bottom:20px}
+.dashboard-card{
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  background-color: var(--card);
+  padding: 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.04);
+  box-shadow: var(--shadow-1);
+  transition: transform .16s cubic-bezier(.2,.9,.2,1), box-shadow .16s;
+}
+.dashboard-card:hover{ transform: translateY(-3px); box-shadow: 0 18px 40px rgba(2,6,23,0.55); }
+
+/* Map container with dark theme */
+.map-container{height:calc(100vh - 70px);position:relative}
+#fullMap{width:100%;height:100%}
+
+/* Map controls: dark translucent */
+.map-controls{
+  position:absolute;top:10px;left:10px;z-index:1000;
+  background: rgba(255,255,255,0.02);
+  color: var(--text);
+  padding:10px;border-radius:8px;
+  border:1px solid rgba(255,255,255,0.04);
+  box-shadow: 0 10px 24px rgba(2,6,23,0.45);
+  display:flex;flex-direction:column;gap:8px
+}
+.map-controls button{
+  background: var(--accent);
+  color: #041226;
+  border:none;
+  padding:8px 15px;
+  border-radius:8px;
+  cursor:pointer;
+  font-size:12px;
+  font-weight:700;
+}
+.map-controls button:hover{ transform: translateY(-1px); }
+
+/* Legend: dark translucent card */
+.legend{
+  position:absolute;bottom:10px;left:10px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  color: var(--text);
+  padding:12px;border-radius:8px;z-index:1000;
+  border:1px solid rgba(255,255,255,0.04);
+  box-shadow: 0 10px 24px rgba(2,6,23,0.45);
+  font-size:11px
+}
+.legend h4{font-size:12px;margin-bottom:8px;color:var(--muted)}
+.legend-item{margin-bottom:6px;font-size:11px;display:flex;align-items:center;color:var(--muted)}
+.legend-color{
+  width:16px;height:16px;border-radius:50%;margin-right:8px;display:inline-block;
+  border:2px solid rgba(255,255,255,0.25);box-shadow:0 0 5px rgba(0,0,0,0.3);flex-shrink:0
+}
+
+/* Sidebar: dark theme card */
+.sidebar{
+  width:100%;max-width:400px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.01));
+  color: var(--text);
+  box-shadow: 0 18px 40px rgba(2,6,23,0.6);
+  overflow-y:auto;position:fixed;right:0;top:70px;height:calc(100vh - 70px);z-index:1000;
+  transform:translateX(100%);transition:transform 0.3s;
+  border-left:1px solid rgba(255,255,255,0.04)
+}
+.sidebar.open{transform:translateX(0)}
+.sidebar-toggle{
+  position:absolute;left:-40px;top:50%;transform:translateY(-50%);
+  background: transparent;color: var(--text);
+  border:1px solid rgba(255,255,255,0.04);
+  border-radius:5px 0 0 5px;padding:15px 10px;cursor:pointer;font-size:18px;
+  box-shadow: -2px 2px 12px rgba(3,7,18,0.45);
+  display:none
+}
+.sidebar-toggle:hover{background: rgba(255,255,255,0.02)}
+.sidebar-header{background: transparent;padding:15px;border-bottom:1px solid rgba(255,255,255,0.04)}
+.sidebar-header h2{font-size:16px;margin-bottom:10px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
+.stat-card{
+  background: rgba(255,255,255,0.02);
+  padding:12px;border-radius:10px;text-align:center;
+  border:1px solid rgba(255,255,255,0.04)
+}
+.stat-card h3{font-size:20px;color:var(--accent);margin-bottom:3px}
+.stat-card p{font-size:10px;color:var(--muted)}
+.search-box input{
+  width:100%;padding:8px;border:1px solid rgba(255,255,255,0.06);
+  border-radius:8px;background: rgba(255,255,255,0.02);color: var(--text);font-size:13px;margin-top:8px
+}
+
+/* Alerts list items in dark theme */
+.alert-item{
+  padding:12px 15px;border-bottom:1px solid rgba(255,255,255,0.04);
+  cursor:pointer;transition:background 0.2s;background: transparent;
+}
+.alert-item:hover{background: rgba(255,255,255,0.02)}
+.alert-item.critical{background: rgba(239,68,68,0.08);border-left:4px solid var(--accent-2)}
+.alert-item.warning{background: rgba(245,158,11,0.08);border-left:4px solid var(--orange)}
+.alert-item h3{font-size:13px;margin-bottom:4px}
+.alert-item p{font-size:11px;color:var(--muted);margin-bottom:2px}
+.alert-badge{
+  display:inline-block;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:700;margin-top:4px
+}
+.badge-expired{background: var(--accent-2);color:white}
+.badge-warning{background: var(--orange);color:white}
+
+/* List view and controls */
+.list-view{padding:15px;overflow-y:auto}
+.list-controls{
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  padding:15px;border-radius:12px;margin-bottom:15px;
+  border:1px solid rgba(255,255,255,0.04);
+  box-shadow: var(--shadow-1)
+}
+.list-controls h2{margin-bottom:12px;font-size:18px}
+.filter-row{display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}
+.filter-group label{font-size:12px;font-weight:700;margin-bottom:4px;display:block;color:var(--muted)}
+.filter-group select,.filter-group input{
+  width:100%;padding:8px;border:1px solid rgba(255,255,255,0.06);
+  border-radius:8px;background: rgba(255,255,255,0.02);color: var(--text);font-size:13px
+}
+.export-buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.export-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  padding:8px 15px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;border:none;
+  box-shadow: 0 8px 20px rgba(3,7,18,0.5);
+}
+.export-btn.csv{background:#ed8936;color:white}
+.export-btn.excel{background:#48bb78;color:white}
+.export-btn.pdf{background:#e53e3e;color:white}
+.export-btn:hover{ transform: translateY(-2px); }
+
+/* Table styled to dark theme */
+.projects-table{
+  background: transparent;border-radius:12px;overflow-x:auto;
+  box-shadow: var(--shadow-1); border:1px solid rgba(255,255,255,0.04)
+}
+table{width:100%;border-collapse:collapse;min-width:800px}
+thead{
+  background: var(--accent);
+  color:#041226;
+}
+th,td{padding:10px 8px;text-align:left;font-size:12px}
+td{border-bottom:1px solid rgba(255,255,255,0.04)}
+tbody tr:hover{background: rgba(255,255,255,0.02)}
+.status-badge{
+  padding:3px 8px;border-radius:10px;font-size:10px;font-weight:700;white-space:nowrap
+}
+.status-valid{background:#c6f6d5;color:#22543d}
+.status-expired{background:#fed7d7;color:#742a2a}
+.status-renewal{background:#feebc8;color:#7c2d12}
+.edit-btn{
+  background: transparent;color: var(--text);
+  border:1px solid rgba(255,255,255,0.04);
+  padding:6px 12px;border-radius:8px;cursor:pointer;font-size:11px;font-weight:700
+}
+.edit-btn:hover{background: rgba(255,255,255,0.02)}
+
+/* Modal in dark theme */
+.modal{display:none;position:fixed;z-index:2000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.88);overflow-y:auto;padding:10px}
+.modal-content{
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  margin:20px auto;width:100%;max-width:600px;border-radius:12px;
+  box-shadow: 0 24px 60px rgba(2,6,23,0.6);
+  border:1px solid rgba(255,255,255,0.04)
+}
+.modal-header{
+  background: transparent;color: var(--text);
+  padding:15px 20px;border-radius:12px 12px 0 0;
+  display:flex;justify-content:space-between;align-items:center;
+  border-bottom:1px solid rgba(255,255,255,0.04)
+}
+.modal-header h2{font-size:16px}
+.close{color:var(--text);font-size:24px;font-weight:bold;cursor:pointer}
+.modal-body{padding:20px;max-height:60vh;overflow-y:auto}
+.form-group{margin-bottom:15px}
+.form-group label{display:block;margin-bottom:4px;font-weight:700;font-size:12px;color:var(--muted)}
+.form-group input,.form-group select{
+  width:100%;padding:8px;border:1px solid rgba(255,255,255,0.06);
+  border-radius:8px;background: rgba(255,255,255,0.02);color: var(--text);font-size:13px
+}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.doc-section{
+  background: rgba(255,255,255,0.02);
+  padding:12px;border-radius:10px;margin-bottom:12px;border-left:4px solid var(--accent);
+  border:1px solid rgba(255,255,255,0.04)
+}
+.doc-section h4{font-size:13px;color:var(--accent);margin-bottom:8px}
+.btn-primary{
+  background: var(--accent);color:#041226;border:none;
+  padding:10px 20px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;width:100%;margin-top:10px
+}
+.btn-primary:hover{ transform: translateY(-1px); }
+.btn-secondary{
+  background: transparent;color: var(--text);
+  border:1px solid rgba(255,255,255,0.04);
+  padding:10px 20px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;width:100%;margin-top:8px
+}
+.btn-secondary:hover{ background: rgba(255,255,255,0.02); }
+
+/* Mobile alert toggle */
+.mobile-alert-toggle{
+  display:none;position:fixed;bottom:20px;right:20px;background: var(--accent);color:#041226;
+  border:none;padding:15px;border-radius:50%;
+  box-shadow:0 12px 30px rgba(3,7,18,0.45);
+  cursor:pointer;z-index:999;font-size:20px;width:60px;height:60px
+}
+
+/* Map canvas in dark while tiles load */
+.map-canvas {
+  width: 100%;
+  height: 420px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.02);
+  border:1px solid rgba(255,255,255,0.04);
+}
+
+/* Responsive tweaks */
+@media (max-width:768px){
+  .header h1{font-size:20px}
+  .header p{font-size:11px}
+  .nav-buttons{width:100%;justify-content:space-between}
+  .nav-btn{flex:1;padding:6px 10px;font-size:11px;text-align:center}
+  .dashboard-grid{grid-template-columns:1fr;gap:12px}
+  .sidebar{width:100%;max-width:100%}
+  .sidebar-toggle{display:block}
+  .mobile-alert-toggle{display:block}
+  .map-controls{flex-direction:row;gap:5px}
+  .map-controls button{padding:6px 10px;font-size:11px}
+  .legend{font-size:10px;padding:8px}
+  .legend h4{font-size:11px}
+  .filter-row{gap:10px}
+  table{font-size:11px}
+  th,td{padding:8px 6px}
+  .projects-table{overflow-x:scroll}
+  .modal{padding:5px}
+  .modal-content{margin:10px auto}
+  .form-row{grid-template-columns:1fr}
+}
+@media (max-width:480px){
+  .header h1{font-size:18px}
+  .nav-btn{font-size:10px;padding:5px 8px}
+  .dashboard-card{padding:15px}
+  th,td{padding:6px 4px;font-size:10px}
+  .edit-btn{padding:6px 10px;font-size:10px}
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-content">
+    <div>
+      <h1>📋 Project Document Tracker</h1>
+      <p>Professional Edition</p>
+    </div>
+    <div class="nav-buttons">
+      <!-- Back to main page button -->
+      <a href="/" class="back-btn" title="Back to main">
+        ⬅ Back
+      </a>
+
+      <button class="nav-btn active" onclick="showScreen('dashboard')">📊 Dashboard</button>
+      <button class="nav-btn" onclick="showScreen('map')">🗺️ Map</button>
+      <button class="nav-btn" onclick="showScreen('list')">📋 List</button>
+    </div>
+  </div>
+</div>
+
+<button class="mobile-alert-toggle" onclick="toggleSidebar(getCurrentScreen())" id="alertToggle">🔔</button>
+
+<div id="dashboard" class="screen active">
+  <div class="dashboard" id="dashboardContent">
+    <h2 style="margin-bottom:20px;color:var(--text);font-size:22px">📊 Document Status Overview</h2>
+    <div class="dashboard-grid" id="dashboardBoxes"></div>
+  </div>
+  <div class="sidebar" id="dashSidebar">
+    <button class="sidebar-toggle" onclick="toggleSidebar('dash')">◀</button>
+    <div class="sidebar-header">
+      <h2>⚠️ Document Alerts</h2>
+      <div class="stats">
+        <div class="stat-card"><h3 id="dash-stat-expired">0</h3><p>Expired</p></div>
+        <div class="stat-card"><h3 id="dash-stat-expiring">0</h3><p>Expiring</p></div>
+        <div class="stat-card"><h3 id="dash-stat-total">0</h3><p>Total</p></div>
+      </div>
+      <div class="search-box"><input type="text" id="dashSearchAlerts" placeholder="🔍 Search..." onkeyup="filterAlerts('dash')"></div>
+    </div>
+    <div id="dashAlertsList"></div>
+  </div>
+</div>
+
+<div id="map" class="screen">
+  <div class="map-container" id="mapContainer">
+    <div class="map-controls">
+      <button onclick="alert('Add Project')">➕ Add</button>
+      <button onclick="location.reload()">🔄 Refresh</button>
+    </div>
+    <div id="fullMap"></div>
+    <div class="legend">
+      <h4>Status</h4>
+      <div class="legend-item"><span class="legend-color" style="background:#48bb78"></span><span>Valid</span></div>
+      <div class="legend-item"><span class="legend-color" style="background:#ed8936"></span><span>Renewal</span></div>
+      <div class="legend-item"><span class="legend-color" style="background:#e53e3e"></span><span>Expired</span></div>
+    </div>
+    <div class="sidebar" id="mapSidebar">
+      <button class="sidebar-toggle" onclick="toggleSidebar('map')">◀</button>
+      <div class="sidebar-header">
+        <h2>⚠️ Alerts</h2>
+        <div class="stats">
+          <div class="stat-card"><h3 id="map-stat-expired">0</h3><p>Expired</p></div>
+          <div class="stat-card"><h3 id="map-stat-expiring">0</h3><p>Expiring</p></div>
+          <div class="stat-card"><h3 id="map-stat-total">0</h3><p>Total</p></div>
+        </div>
+        <div class="search-box"><input type="text" id="mapSearchAlerts" placeholder="🔍 Search..." onkeyup="filterAlerts('map')"></div>
+      </div>
+      <div id="mapAlertsList"></div>
+    </div>
+  </div>
+</div>
+
+<div id="list" class="screen">
+  <div class="list-view" id="listContent">
+    <div class="list-controls">
+      <h2>📋 Projects List</h2>
+      <div class="filter-row">
+        <div class="filter-group"><label>Search</label><input type="text" id="filterSearch" placeholder="Search..." onkeyup="applyFilters()"></div>
+        <div class="filter-group"><label>Status</label><select id="filterStatus" onchange="applyFilters()"><option value="all">All</option><option value="valid">Valid</option><option value="expired">Expired</option><option value="renewal">Renewal</option></select></div>
+        <div class="filter-group"><label>Document</label><select id="filterDocument" onchange="applyFilters()"><option value="all">All</option></select></div>
+      </div>
+      <div class="export-buttons">
+        <button class="export-btn csv" onclick="exportToCSV()">📋 CSV</button>
+        <button class="export-btn excel" onclick="exportToExcel()">📊 Excel</button>
+        <button class="export-btn pdf" onclick="exportToPDF()">📄 PDF</button>
+      </div>
+    </div>
+    <div class="projects-table">
+      <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Location</th><th>Status</th><th>Exp</th><th>Ren</th><th>Val</th><th>Actions</th></tr></thead>
+        <tbody id="projectsTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="sidebar" id="listSidebar">
+    <button class="sidebar-toggle" onclick="toggleSidebar('list')">◀</button>
+    <div class="sidebar-header">
+      <h2>⚠️ Alerts</h2>
+      <div class="stats">
+        <div class="stat-card"><h3 id="list-stat-expired">0</h3><p>Expired</p></div>
+        <div class="stat-card"><h3 id="list-stat-expiring">0</h3><p>Expiring</p></div>
+        <div class="stat-card"><h3 id="list-stat-total">0</h3><p>Total</p></div>
+      </div>
+      <div class="search-box"><input type="text" id="listSearchAlerts" placeholder="🔍 Search..." onkeyup="filterAlerts('list')"></div>
+    </div>
+    <div id="listAlertsList"></div>
+  </div>
+</div>
+
+<div id="editModal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>✏️ Edit Documents</h2>
+      <span class="close" onclick="closeEditModal()">&times;</span>
+    </div>
+    <div class="modal-body">
+      <div id="editProjectInfo" style="background: rgba(255,255,255,0.02); padding:12px; border-radius:10px; margin-bottom:15px; border:1px solid rgba(255,255,255,0.04)"></div>
+      <form id="editForm" onsubmit="saveEdit(event)">
+        <div id="editDocuments"></div>
+        <button type="submit" class="btn-primary">💾 Save Changes</button>
+        <button type="button" class="btn-secondary" onclick="closeEditModal()">Cancel</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+let fullMap,projects=[],documentTypes=['TPI Report','COC Report','Attested Contract','NOC','Istifaa'];
+const sidebarStates={dash:false,map:false,list:false};
+let currentEditProject=null;
+
+function getCurrentScreen(){
+  if(document.getElementById('dashboard').classList.contains('active'))return'dash';
+  if(document.getElementById('map').classList.contains('active'))return'map';
+  if(document.getElementById('list').classList.contains('active'))return'list';
+  return'dash';
+}
+
+function generateSampleData(){
+  const uaeLocations=[
+    {name:'Dubai Marina',lat:25.0805,lng:55.1410},{name:'Downtown Dubai',lat:25.1972,lng:55.2744},
+    {name:'Jumeirah',lat:25.2285,lng:55.2590},{name:'Deira',lat:25.2714,lng:55.3095},
+    {name:'Business Bay',lat:25.1876,lng:55.2631},{name:'Palm Jumeirah',lat:25.1124,lng:55.1390},
+    {name:'Dubai Silicon Oasis',lat:25.1243,lng:55.3789},{name:'Motor City',lat:25.0454,lng:55.2286},
+    {name:'Sports City',lat:25.0408,lng:55.2206},{name:'Arabian Ranches',lat:25.0515,lng:55.2649},
+    {name:'Dubai Hills',lat:25.1063,lng:55.2453},{name:'City Walk',lat:25.2161,lng:55.2625},
+    {name:'Mirdif',lat:25.2171,lng:55.4098},{name:'International City',lat:25.1721,lng:55.4104},
+    {name:'Discovery Gardens',lat:25.0432,lng:55.1292},{name:'Dubai Festival City',lat:25.2241,lng:55.3533},
+    {name:'Abu Dhabi Downtown',lat:24.4539,lng:54.3773},{name:'Abu Dhabi Corniche',lat:24.4764,lng:54.3233},
+    {name:'Yas Island',lat:24.4887,lng:54.6076},{name:'Saadiyat Island',lat:24.5412,lng:54.4373},
+    {name:'Reem Island',lat:24.4975,lng:54.4047},{name:'Mussafah',lat:24.3593,lng:54.5037},
+    {name:'Khalifa City',lat:24.4177,lng:54.5985},{name:'Al Raha Beach',lat:24.5184,lng:54.6455},
+    {name:'Masdar City',lat:24.4292,lng:54.6169},{name:'Mohammed Bin Zayed City',lat:24.3384,lng:54.5414},
+    {name:'Sharjah City Center',lat:25.3463,lng:55.4209},{name:'Sharjah University',lat:25.2947,lng:55.4780},
+    {name:'Al Nahda Sharjah',lat:25.2976,lng:55.3773},{name:'Al Qasimia',lat:25.3577,lng:55.3904},
+    {name:'Al Majaz',lat:25.3260,lng:55.3792},{name:'Al Khan',lat:25.3411,lng:55.3678},
+    {name:'Al Ain City Center',lat:24.2075,lng:55.7447},{name:'Al Ain Zoo Area',lat:24.1808,lng:55.7323},
+    {name:'Bawadi Mall',lat:24.2373,lng:55.7202},{name:'Hili',lat:24.2342,lng:55.7568},
+    {name:'Ajman Downtown',lat:25.4052,lng:55.5136},{name:'Ajman Beach',lat:25.4215,lng:55.4348},
+    {name:'Ajman Free Zone',lat:25.3894,lng:55.5107},{name:'Al Nuaimiya',lat:25.3987,lng:55.4507},
+    {name:'RAK City Center',lat:25.7897,lng:55.9434},{name:'RAK Industrial',lat:25.6805,lng:55.7702},
+    {name:'Al Nakheel',lat:25.7850,lng:55.9550},{name:'Dafan Al Nakheel',lat:25.6842,lng:55.9842},
+    {name:'Fujairah City',lat:25.1288,lng:56.3265},{name:'Fujairah Port',lat:25.1177,lng:56.3511},
+    {name:'Dibba Fujairah',lat:25.5928,lng:56.2594},{name:'Umm Al Quwain',lat:25.5647,lng:55.5552}
+  ];
+  const samples=[];
+  for(let i=0;i<300;i++){
+    const location=uaeLocations[i%uaeLocations.length];
+    const lat=location.lat+(Math.random()-0.5)*0.015;
+    const lng=location.lng+(Math.random()-0.5)*0.015;
+    const projectNum=Math.floor(i/uaeLocations.length)+1;
+    const today=new Date();
+    const statusType=i%3;
+    const docs=[];
+    for(let j=0;j<5;j++){
+      const issueDate=new Date(today);
+      issueDate.setDate(issueDate.getDate()-365);
+      const expiryDate=new Date(today);
+      if(statusType===0){
+        expiryDate.setDate(expiryDate.getDate()-(Math.floor(Math.random()*55)+5));
+      }else if(statusType===1){
+        expiryDate.setDate(expiryDate.getDate()+(Math.floor(Math.random()*29)+1));
+      }else{
+        expiryDate.setDate(expiryDate.getDate()+(Math.floor(Math.random()*335)+31));
+      }
+      docs.push({
+        name:documentTypes[j],
+        issueDate:issueDate.toISOString().split('T')[0],
+        expiryDate:expiryDate.toISOString().split('T')[0],
+        authority:'Authority '+(j+1)
+      });
+    }
+    samples.push({
+      id:'PRJ-'+(i+1).toString().padStart(4,'0'),
+      name:location.name+' - P'+projectNum,
+      location:location.name,
+      latitude:lat,
+      longitude:lng,
+      contactEmail:'project'+(i+1)+'@example.com',
+      description:'Project at '+location.name,
+      documents:docs
+    });
+  }
+  return samples;
+}
+
+function loadData(){
+  const saved=localStorage.getItem('projectTrackerData3');
+  if(saved){
+    try{projects=JSON.parse(saved)}catch(e){projects=generateSampleData();saveData()}
+  }else{
+    projects=generateSampleData();
+    saveData();
+  }
+}
+
+function saveData(){
+  localStorage.setItem('projectTrackerData3',JSON.stringify(projects));
+}
+
+function getStatus(p){
+  const today=new Date();
+  let hasExpired=false,hasRenewal=false;
+  p.documents.forEach(d=>{
+    const expiryDate=new Date(d.expiryDate);
+    const days=Math.ceil((expiryDate-today)/86400000);
+    if(days<0)hasExpired=true;
+    else if(days<=30)hasRenewal=true;
+  });
+  return hasExpired?'expired':hasRenewal?'renewal':'valid';
+}
+
+function getDocStatus(d){
+  const today=new Date();
+  const expiryDate=new Date(d.expiryDate);
+  const days=Math.ceil((expiryDate-today)/86400000);
+  return days<0?'expired':days<=30?'renewal':'valid';
+}
+
+function initMap(){
+  fullMap=L.map('fullMap').setView([24.4539,54.3773],8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap',maxZoom:19}).addTo(fullMap);
+  updateMap();
+}
+
+function updateMap(){
+  fullMap.eachLayer(layer=>{if(layer instanceof L.Marker)fullMap.removeLayer(layer)});
+  projects.forEach(p=>{
+    const status=getStatus(p);
+    const color=status==='expired'?'#e53e3e':status==='renewal'?'#ed8936':'#48bb78';
+    const icon=L.divIcon({
+      html:'<div style="width:35px;height:35px;border-radius:50%;background:'+color+';border:4px solid white;box-shadow:0 0 0 2px '+color+',0 4px 12px rgba(0,0,0,0.4);animation:pulse 2s infinite"></div>',
+      iconSize:[35,35],
+      iconAnchor:[17,17]
+    });
+    const marker=L.marker([p.latitude,p.longitude],{icon:icon});
+    let docsHTML='';
+    p.documents.forEach(d=>{
+      const ds=getDocStatus(d);
+      const st=ds==='expired'?'Expired':ds==='renewal'?'Renewal':'Valid';
+      const bc=ds==='expired'?'status-expired':ds==='renewal'?'status-renewal':'status-valid';
+      docsHTML+='<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:11px;color:var(--muted)"><span>'+d.name+'</span><span class="status-badge '+bc+'">'+st+'</span></div>';
+    });
+    marker.bindPopup('<div style="min-width:250px;color:var(--text)"><h3 style="font-size:14px">'+p.name+'</h3><p style="font-size:11px;margin:3px 0;color:var(--muted)"><strong>ID:</strong> '+p.id+'</p><p style="font-size:11px;margin:3px 0;color:var(--muted)"><strong>Location:</strong> '+p.location+'</p><div style="background: rgba(255,255,255,0.02); padding:8px; border-radius:8px; border:1px solid rgba(255,255,255,0.04); margin-top:8px"><h4 style="font-size:12px;margin-bottom:8px;color:var(--accent)">📄 Documents</h4>'+docsHTML+'</div><button onclick="openEditModal(\''+p.id+'\')" style="width:100%;margin-top:8px;background: var(--accent); color:#041226; border:none; padding:8px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:700">✏️ Edit</button></div>');
+    marker.addTo(fullMap);
+  });
+  updateAlerts('map');
+}
+
+function updateDashboard(){
+  const docStats={};
+  documentTypes.forEach(t=>docStats[t]={total:0,expired:0,renewal:0,valid:0});
+  projects.forEach(p=>{
+    p.documents.forEach(d=>{
+      if(docStats[d.name]){
+        docStats[d.name].total++;
+        const s=getDocStatus(d);
+        if(s==='expired')docStats[d.name].expired++;
+        else if(s==='renewal')docStats[d.name].renewal++;
+        else docStats[d.name].valid++;
+      }
+    });
+  });
+  let html='';
+  documentTypes.forEach(dt=>{
+    const st=docStats[dt];
+    html+='<div class="dashboard-card" style="border-top:4px solid var(--accent)"><h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">'+dt+'</h4><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center"><div><div style="font-size:24px;font-weight:800;color:#e53e3e">'+st.expired+'</div><div style="font-size:10px;color:var(--muted)">Expired</div></div><div><div style="font-size:24px;font-weight:800;color:#ed8936">'+st.renewal+'</div><div style="font-size:10px;color:var(--muted)">Renewal</div></div><div><div style="font-size:24px;font-weight:800;color:#48bb78">'+st.valid+'</div><div style="font-size:10px;color:var(--muted)">Valid</div></div></div><div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04);text-align:center"><span style="font-size:11px;color:var(--muted)">Total: <strong style="color:var(--text)">'+st.total+'</strong></span></div></div>';
+  });
+  document.getElementById('dashboardBoxes').innerHTML=html;
+  updateAlerts('dash');
+}
+
+function updateAlerts(pre){
+  const today=new Date();
+  let alerts=[],exp=0,expiring=0;
+  projects.forEach(p=>{
+    p.documents.forEach(d=>{
+      const expiryDate=new Date(d.expiryDate);
+      const days=Math.ceil((expiryDate-today)/86400000);
+      if(days<=30){
+        let ac='warning',bc='badge-warning',msg='Expires in '+days+' days';
+        if(days<0){exp++;ac='critical';bc='badge-expired';msg='Expired '+Math.abs(days)+' days ago'}
+        else if(days<=7){expiring++;ac='critical';bc='badge-expired'}
+        else{expiring++}
+        alerts.push({projectId:p.id,projectName:p.name,docName:d.name,expiryDate:d.expiryDate,message:msg,badgeClass:bc,alertClass:ac,priority:days});
+      }
+    });
+  });
+  alerts.sort((a,b)=>a.priority-b.priority);
+  document.getElementById(pre+'-stat-expired').textContent=exp;
+  document.getElementById(pre+'-stat-expiring').textContent=expiring;
+  document.getElementById(pre+'-stat-total').textContent=projects.length;
+  const list=document.getElementById(pre+'AlertsList');
+  list.innerHTML=alerts.length===0?'<div style="padding:30px 15px;text-align:center;color:var(--muted);font-size:12px">✅ No alerts</div>':alerts.map(a=>'<div class="alert-item '+a.alertClass+'" onclick="openEditModal(\''+a.projectId+'\')"><h3>'+a.projectName+'</h3><p><strong>'+a.docName+'</strong></p><p>Expiry: '+new Date(a.expiryDate).toLocaleDateString()+'</p><span class="alert-badge '+a.badgeClass+'">'+a.message+'</span></div>').join('');
+}
+
+function updateFilters(){
+  const df=document.getElementById('filterDocument');
+  df.innerHTML='<option value="all">All Documents</option>';
+  documentTypes.forEach(t=>df.innerHTML+='<option value="'+t+'">'+t+'</option>');
+}
+
+function renderList(){
+  const term=document.getElementById('filterSearch').value.toLowerCase();
+  const sf=document.getElementById('filterStatus').value;
+  const df=document.getElementById('filterDocument').value;
+  const filtered=projects.filter(p=>{
+    const match=p.name.toLowerCase().includes(term)||p.id.toLowerCase().includes(term)||p.location.toLowerCase().includes(term);
+    if(!match)return false;
+    const s=getStatus(p);
+    if(sf!=='all'&&s!==sf)return false;
+    if(df!=='all'){
+      const hasDoc=p.documents.some(d=>d.name===df);
+      if(!hasDoc)return false;
+    }
+    return true;
+  });
+  const tbody=document.getElementById('projectsTableBody');
+  if(filtered.length===0){
+    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--muted)">No projects found</td></tr>';
+    return;
+  }
+  tbody.innerHTML=filtered.map(p=>{
+    const s=getStatus(p);
+    let exp=0,ren=0,val=0;
+    p.documents.forEach(d=>{
+      const ds=getDocStatus(d);
+      if(ds==='expired')exp++;
+      else if(ds==='renewal')ren++;
+      else val++;
+    });
+    const sb=s==='expired'?'<span class="status-badge status-expired">Expired</span>':s==='renewal'?'<span class="status-badge status-renewal">Renewal</span>':'<span class="status-badge status-valid">Valid</span>';
+    return'<tr><td>'+p.id+'</td><td>'+p.name+'</td><td>'+p.location+'</td><td>'+sb+'</td><td>'+exp+'</td><td>'+ren+'</td><td>'+val+'</td><td><button class="edit-btn" onclick="openEditModal(\''+p.id+'\')">✏️ Edit</button></td></tr>';
+  }).join('');
+  updateAlerts('list');
+}
+
+function openEditModal(projectId){
+  const project=projects.find(p=>p.id===projectId);
+  if(!project)return;
+  currentEditProject=project;
+  document.getElementById('editProjectInfo').innerHTML='<h3 style="margin:0 0 4px 0;color:var(--accent);font-size:14px">'+project.name+'</h3><p style="margin:0;font-size:11px;color:var(--muted)"><strong>ID:</strong> '+project.id+' | <strong>Location:</strong> '+project.location+'</p>';
+  let docsHTML='';
+  project.documents.forEach((doc,idx)=>{
+    docsHTML+='<div class="doc-section"><h4>'+doc.name+'</h4><div class="form-row"><div class="form-group"><label>Issue Date</label><input type="date" id="doc'+idx+'-issue" value="'+doc.issueDate+'" required></div><div class="form-group"><label>Expiry Date</label><input type="date" id="doc'+idx+'-expiry" value="'+doc.expiryDate+'" required></div></div></div>';
+  });
+  document.getElementById('editDocuments').innerHTML=docsHTML;
+  document.getElementById('editModal').style.display='block';
+}
+
+function closeEditModal(){
+  document.getElementById('editModal').style.display='none';
+  currentEditProject=null;
+}
+
+function saveEdit(e){
+  e.preventDefault();
+  if(!currentEditProject)return;
+  const project=projects.find(p=>p.id===currentEditProject.id);
+  if(!project)return;
+  project.documents.forEach((doc,idx)=>{
+    doc.issueDate=document.getElementById('doc'+idx+'-issue').value;
+    doc.expiryDate=document.getElementById('doc'+idx+'-expiry').value;
+  });
+  saveData();
+  updateDashboard();
+  updateMap();
+  renderList();
+  closeEditModal();
+  alert('✅ Project updated!');
+}
+
+function applyFilters(){renderList()}
+
+function filterAlerts(pre){
+  const term=document.getElementById(pre+'SearchAlerts').value.toLowerCase();
+  document.querySelectorAll('#'+pre+'AlertsList .alert-item').forEach(i=>i.style.display=i.textContent.toLowerCase().includes(term)?'block':'none');
+}
+
+function toggleSidebar(s){
+  sidebarStates[s]=!sidebarStates[s];
+  const sb=document.getElementById(s+'Sidebar');
+  const btn=sb.querySelector('.sidebar-toggle');
+  const alertBtn=document.getElementById('alertToggle');
+  if(sidebarStates[s]){
+    sb.classList.add('open');
+    if(btn)btn.innerHTML='▶';
+    if(alertBtn)alertBtn.innerHTML='✖';
+    if(s==='dash')document.getElementById('dashboardContent').classList.add('sidebar-open');
+    else if(s==='map'){document.getElementById('mapContainer').classList.add('sidebar-open');setTimeout(()=>fullMap.invalidateSize(),300)}
+    else if(s==='list')document.getElementById('listContent').classList.add('sidebar-open');
+  }else{
+    sb.classList.remove('open');
+    if(btn)btn.innerHTML='◀';
+    if(alertBtn)alertBtn.innerHTML='🔔';
+    if(s==='dash')document.getElementById('dashboardContent').classList.remove('sidebar-open');
+    else if(s==='map'){document.getElementById('mapContainer').classList.remove('sidebar-open');setTimeout(()=>fullMap.invalidateSize(),300)}
+    else if(s==='list')document.getElementById('listContent').classList.remove('sidebar-open');
+  }
+}
+
+function showScreen(sn){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById(sn).classList.add('active');
+  event.target.classList.add('active');
+  ['dash','map','list'].forEach(s=>{
+    const sb=document.getElementById(s+'Sidebar');
+    if(sb)sb.classList.remove('open');
+    sidebarStates[s]=false;
+  });
+  document.getElementById('alertToggle').innerHTML='🔔';
+  if(sn==='map')setTimeout(()=>{fullMap.invalidateSize();updateMap()},100);
+  else if(sn==='dashboard')updateDashboard();
+  else if(sn==='list')renderList();
+}
+
+function exportToCSV(){
+  let csv='Project ID,Project Name,Location,Contact Email,Document Name,Issue Date,Expiry Date,Status\n';
+  projects.forEach(p=>{
+    p.documents.forEach(d=>{
+      const s=getDocStatus(d);
+      const st=s==='expired'?'Expired':s==='renewal'?'Renewal':'Valid';
+      csv+='"'+p.id+'","'+p.name+'","'+p.location+'","'+p.contactEmail+'","'+d.name+'","'+d.issueDate+'","'+d.expiryDate+'","'+st+'"\n';
+    });
+  });
+  const blob=new Blob([csv],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='projects.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportToExcel(){
+  const data=[];
+  projects.forEach(p=>{
+    p.documents.forEach(d=>{
+      const s=getDocStatus(d);
+      data.push({'Project ID':p.id,'Project Name':p.name,'Location':p.location,'Contact Email':p.contactEmail,'Document Name':d.name,'Issue Date':d.issueDate,'Expiry Date':d.expiryDate,'Status':s==='expired'?'Expired':s==='renewal'?'Renewal':'Valid'});
+    });
+  });
+  const ws=XLSX.utils.json_to_sheet(data);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Projects');
+  XLSX.writeFile(wb,'projects.xlsx');
+}
+
+function exportToPDF(){
+  const{jsPDF}=window.jspdf;
+  const doc=new jsPDF('l','mm','a4');
+  doc.setFontSize(18);
+  doc.text('Project Document Tracker',14,20);
+  doc.setFontSize(10);
+  doc.text('Generated: '+new Date().toLocaleDateString(),14,28);
+  const data=[];
+  projects.forEach(p=>{
+    p.documents.forEach(d=>{
+      const s=getDocStatus(d);
+      const st=s==='expired'?'Expired':s==='renewal'?'Renewal':'Valid';
+      data.push([p.id,p.name.substring(0,20),p.location,d.name,d.expiryDate,st]);
+    });
+  });
+  doc.autoTable({startY:35,head:[['ID','Name','Location','Document','Expiry','Status']],body:data,theme:'striped',headStyles:{fillColor:[102,126,234]},styles:{fontSize:7}});
+  doc.save('projects.pdf');
+}
+
+window.onclick=function(e){
+  if(e.target.id==='editModal'){
+    closeEditModal();
+  }
+};
+
+window.onload=function(){
+  loadData();
+  initMap();
+  updateDashboard();
+  updateFilters();
+  renderList();
+};
+</script>
+</body>
+</html>
