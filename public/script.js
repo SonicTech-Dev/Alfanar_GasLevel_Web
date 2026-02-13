@@ -29,20 +29,34 @@ try {
   if (savedSearch) listSearchQuery = String(savedSearch);
 } catch (e) { /* ignore */ }
 
-// Filters state for list view (updated: all dropdowns single-select where applicable)
+// Filters state — migrated to multi-select arrays (OR within each group; AND across groups).
+// Backward compatibility: we still read legacy single-select keys if found in saved state,
+// and populate the corresponding arrays.
 const FILTERS_KEY = 'tank_list_filters_v1';
 const defaultFilters = {
-  emirate: '',                 // single select emirate
-  thresholdStatus: '',         // '' | 'min' | 'max' | 'normal'
-  gasSensor: '',               // '' | 'online' | 'offline'
-  batteryBand: '',             // '' | 'low' | 'normal' | 'full' | 'unknown'
-  gsmBand: '',                 // '' | 'strong' | 'fair' | 'weak' | 'unknown'
-  capacityBand: '',            // '' | 'lt500' | '500-1000' | '1000-2000' | 'gt2000'
-  tankType: '',                // '' | 'Spherical' | 'Cylindrical horizontal' | 'Cylindrical vertical'
-  installType: '',             // '' | 'A/G' | 'B/G'
-  // legacy keys kept for backward compatibility with previously saved state:
-  capacityMin: '', capacityMax: '',
-  emirates: [], thresholdStatuses: [], tankTypes: [], installTypes: []
+  // NEW multi-select arrays
+  emirates: [],                // e.g., ["Dubai","Abu Dhabi"]
+  thresholdStatuses: [],       // "min" | "max" | "normal"
+  gasSensors: [],              // "online" | "offline" | "unknown"
+  batteryBands: [],            // "full" | "fair" | "low" | "unknown"
+  gsmBands: [],                // "strong" | "fair" | "weak" | "unknown"
+  capacityBands: [],           // "lt500" | "500-1000" | "1000-2000" | "gt2000"
+  tankTypes: [],               // "Spherical" | "Cylindrical horizontal" | "Cylindrical vertical"
+  installTypes: [],            // "A/G" | "B/G"
+
+  // Legacy single-select values (kept only for migration on load)
+  emirate: '',
+  thresholdStatus: '',
+  gasSensor: '',
+  batteryBand: '',
+  gsmBand: '',
+  capacityBand: '',
+  tankType: '',
+  installType: '',
+
+  // Legacy capacity min/max for range filtering (still supported)
+  capacityMin: '',
+  capacityMax: ''
 };
 let filters = { ...defaultFilters };
 try {
@@ -51,6 +65,63 @@ try {
     const parsed = JSON.parse(saved);
     if (parsed && typeof parsed === 'object') {
       filters = { ...defaultFilters, ...parsed };
+
+      // MIGRATION: map any legacy single-select values into arrays if arrays are empty
+      const pushIf = (arr, val) => {
+        const v = (val === undefined || val === null) ? '' : String(val).trim();
+        if (v) arr.push(v);
+      };
+
+      if ((!filters.emirates || filters.emirates.length === 0) && parsed.emirate) {
+        filters.emirates = [];
+        pushIf(filters.emirates, parsed.emirate);
+      }
+      if ((!filters.thresholdStatuses || filters.thresholdStatuses.length === 0) && parsed.thresholdStatus) {
+        const val = String(parsed.thresholdStatus).trim();
+        filters.thresholdStatuses = [];
+        pushIf(filters.thresholdStatuses, val);
+      }
+      if ((!filters.gasSensors || filters.gasSensors.length === 0) && parsed.gasSensor) {
+        filters.gasSensors = [];
+        pushIf(filters.gasSensors, parsed.gasSensor);
+      }
+      if ((!filters.batteryBands || filters.batteryBands.length === 0) && parsed.batteryBand) {
+        filters.batteryBands = [];
+        pushIf(filters.batteryBands, parsed.batteryBand);
+      }
+      if ((!filters.gsmBands || filters.gsmBands.length === 0) && parsed.gsmBand) {
+        filters.gsmBands = [];
+        pushIf(filters.gsmBands, parsed.gsmBand);
+      }
+      if ((!filters.capacityBands || filters.capacityBands.length === 0) && parsed.capacityBand) {
+        filters.capacityBands = [];
+        pushIf(filters.capacityBands, parsed.capacityBand);
+      }
+      if ((!filters.tankTypes || filters.tankTypes.length === 0) && parsed.tankType) {
+        filters.tankTypes = [];
+        pushIf(filters.tankTypes, parsed.tankType);
+      }
+      if ((!filters.installTypes || filters.installTypes.length === 0) && parsed.installType) {
+        filters.installTypes = [];
+        pushIf(filters.installTypes, parsed.installType);
+      }
+      // Legacy multi-select keys (from previous iterations) are also preserved if present
+      if (Array.isArray(parsed.emirates)) filters.emirates = parsed.emirates;
+      if (Array.isArray(parsed.thresholdStatuses)) filters.thresholdStatuses = parsed.thresholdStatuses;
+      if (Array.isArray(parsed.tankTypes)) filters.tankTypes = parsed.tankTypes;
+      if (Array.isArray(parsed.installTypes)) filters.installTypes = parsed.installTypes;
+      if (Array.isArray(parsed.gsmBands)) filters.gsmBands = parsed.gsmBands;
+      if (Array.isArray(parsed.batteryBands)) filters.batteryBands = parsed.batteryBands;
+      if (Array.isArray(parsed.capacityBands)) filters.capacityBands = parsed.capacityBands;
+      if (Array.isArray(parsed.gasSensors)) filters.gasSensors = parsed.gasSensors;
+
+      // Additional migration: map legacy battery band "normal" -> "fair"
+      if (Array.isArray(filters.batteryBands)) {
+        filters.batteryBands = filters.batteryBands.map(v => (v === 'normal' ? 'fair' : v));
+      }
+      if (filters.batteryBand && filters.batteryBand === 'normal') {
+        filters.batteryBand = 'fair';
+      }
     }
   }
 } catch (e) { /* ignore */ }
@@ -3037,7 +3108,7 @@ function batteryBandForDevice(dev) {
   const pct = dev._lastBatteryPct;
   if (pct == null || isNaN(pct)) return 'unknown';
   if (pct >= 50) return 'full';
-  if (pct >= 20) return 'normal';
+  if (pct >= 20) return 'fair';
   return 'low';
 }
 function gsmBandForDevice(dev) {
@@ -3097,48 +3168,58 @@ function getFilteredDevices() {
     // Project Name search (prefix on title/name)
     if (q.length > 0 && !getProjectName(d).toLowerCase().startsWith(q)) return false;
 
-    // Emirate filter (single)
-    if (filters.emirate && filters.emirate !== '') {
-      const em = (d.emirate || '').trim();
-      if (em !== filters.emirate) return false;
-    } else if (filters.emirates && filters.emirates.length) {
-      // legacy multi-select
+    // Emirate filter (multi-select OR within group)
+    if (filters.emirates && filters.emirates.length) {
       const em = (d.emirate || '').trim();
       if (!filters.emirates.includes(em)) return false;
+    } else if (filters.emirate) {
+      // legacy single
+      const em = (d.emirate || '').trim();
+      if (em !== filters.emirate) return false;
     }
 
-    // Threshold status (single)
-    if (filters.thresholdStatus && filters.thresholdStatus !== '') {
+    // Threshold status (multi-select OR)
+    if (filters.thresholdStatuses && filters.thresholdStatuses.length) {
+      const st = thresholdStatusForDevice(d);
+      if (!filters.thresholdStatuses.includes(st)) return false;
+    } else if (filters.thresholdStatus) {
       const st = thresholdStatusForDevice(d);
       if (st !== filters.thresholdStatus) return false;
-    } else if (filters.thresholdStatuses && filters.thresholdStatuses.length) {
-      const st = thresholdStatusForDevice(d);
-      const selectedKeys = filters.thresholdStatuses.map(x => (x === 'Min Alarm' ? 'min' : x === 'Max Alarm' ? 'max' : x === 'Normal Range' ? 'normal' : ''));
-      if (!selectedKeys.includes(st)) return false;
     }
 
-    // Gas Sensor Status (Online/Offline)
-    if (filters.gasSensor && filters.gasSensor !== '') {
+    // Gas Sensor Status (multi-select OR)
+    if (filters.gasSensors && filters.gasSensors.length) {
+      const gs = gasSensorStatusForDevice(d);
+      if (!filters.gasSensors.includes(gs)) return false;
+    } else if (filters.gasSensor && filters.gasSensor !== '') {
       const gs = gasSensorStatusForDevice(d);
       if (gs !== filters.gasSensor) return false;
     }
 
-    // Battery band (single)
-    if (filters.batteryBand && filters.batteryBand !== '') {
+    // Battery band (multi-select OR)
+    if (filters.batteryBands && filters.batteryBands.length) {
       const bb = batteryBandForDevice(d);
-      if (bb !== filters.batteryBand) return false;
+      if (!filters.batteryBands.includes(bb)) return false;
+    } else if (filters.batteryBand && filters.batteryBand !== '') {
+      const bb = batteryBandForDevice(d);
+      const compare = filters.batteryBand === 'normal' ? 'fair' : filters.batteryBand;
+      if (bb !== compare) return false;
     }
 
-    // GSM band (single)
-    if (filters.gsmBand && filters.gsmBand !== '') {
+    // GSM band (multi-select OR)
+    if (filters.gsmBands && filters.gsmBands.length) {
+      const gb = gsmBandForDevice(d);
+      if (!filters.gsmBands.includes(gb)) return false;
+    } else if (filters.gsmBand && filters.gsmBand !== '') {
       const gb = gsmBandForDevice(d);
       if (gb !== filters.gsmBand) return false;
     }
 
-    // Capacity band (single)
-    if (filters.capacityBand && filters.capacityBand !== '') {
+    // Capacity bands (multi-select OR). If none selected, respect legacy capacity min/max.
+    if (filters.capacityBands && filters.capacityBands.length) {
       const cap = parseCapacityNumeric(d.lpg_tank_capacity);
-      if (!capacityBandMatches(filters.capacityBand, cap)) return false;
+      const anyMatch = filters.capacityBands.some(b => capacityBandMatches(b, cap));
+      if (!anyMatch) return false;
     } else if ((filters.capacityMin && String(filters.capacityMin).trim() !== '') || (filters.capacityMax && String(filters.capacityMax).trim() !== '')) {
       // legacy min/max
       const cap = parseCapacityNumeric(d.lpg_tank_capacity);
@@ -3149,22 +3230,22 @@ function getFilteredDevices() {
       if (max != null && !isNaN(max) && cap > max) return false;
     }
 
-    // Tank type (single)
-    if (filters.tankType && filters.tankType !== '') {
-      const tt = (d.lpg_tank_type || '').trim();
-      if (tt !== filters.tankType) return false;
-    } else if (filters.tankTypes && filters.tankTypes.length) {
+    // Tank type (multi-select OR)
+    if (filters.tankTypes && filters.tankTypes.length) {
       const tt = (d.lpg_tank_type || '').trim();
       if (!filters.tankTypes.includes(tt)) return false;
+    } else if (filters.tankType && filters.tankType !== '') {
+      const tt = (d.lpg_tank_type || '').trim();
+      if (tt !== filters.tankType) return false;
     }
 
-    // Installation type (single)
-    if (filters.installType && filters.installType !== '') {
-      const it = (d.lpg_installation_type || '').trim();
-      if (it !== filters.installType) return false;
-    } else if (filters.installTypes && filters.installTypes.length) {
+    // Installation type (multi-select OR)
+    if (filters.installTypes && filters.installTypes.length) {
       const it = (d.lpg_installation_type || '').trim();
       if (!filters.installTypes.includes(it)) return false;
+    } else if (filters.installType && filters.installType !== '') {
+      const it = (d.lpg_installation_type || '').trim();
+      if (it !== filters.installType) return false;
     }
 
     return true;
@@ -3177,7 +3258,7 @@ function getTotalPages() {
   return Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
 }
 
-// Professional Filters Modal — all dropdowns
+// Professional Filters Modal — checkbox groups for multi-select
 function showFiltersModal() {
   const modal = document.createElement('div');
   modal.className = 'history-modal';
@@ -3197,90 +3278,145 @@ function showFiltersModal() {
       </div>
 
       <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;">
-        <div>
-          <label style="font-size:13px;color:var(--muted);">Emirate</label>
-          <select id="fltM-emirate" class="graph-title-input">
-            <option value="">Any</option>
-            <option value="Abu Dhabi">Abu Dhabi</option>
-            <option value="Ajman">Ajman</option>
-            <option value="Dubai">Dubai</option>
-            <option value="Fujairah">Fujairah</option>
-            <option value="Ras Al Khaimah">Ras Al Khaimah</option>
-            <option value="Sharjah">Sharjah</option>
-            <option value="Umm Al Quwain">Umm Al Quwain</option>
-          </select>
-        </div>
+        <!-- Emirate group -->
+        <fieldset class="flt-group" data-key="emirates" style="border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;">
+          <legend style="color:var(--muted);font-size:13px;">Emirate</legend>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="btn group-select-all" type="button">Select all</button>
+            <button class="btn group-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+          </div>
+          ${['Abu Dhabi','Ajman','Dubai','Fujairah','Ras Al Khaimah','Sharjah','Umm Al Quwain'].map(v => `
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+              <input type="checkbox" value="${escapeHtml(v)}" />
+              <span>${escapeHtml(v)}</span>
+            </label>
+          `).join('')}
+        </fieldset>
 
-        <div>
-          <label style="font-size:13px;color:var(--muted);">Threshold Status</label>
-          <select id="fltM-threshold" class="graph-title-input">
-            <option value="">Any</option>
-            <option value="min">Min Alarm</option>
-            <option value="max">Max Alarm</option>
-            <option value="normal">Normal Range</option>
-          </select>
-        </div>
+        <!-- Threshold Status group -->
+        <fieldset class="flt-group" data-key="thresholdStatuses" style="border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;">
+          <legend style="color:var(--muted);font-size:13px;">Threshold Status</legend>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="btn group-select-all" type="button">Select all</button>
+            <button class="btn group-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+          </div>
+          ${[
+            { label: 'Min Alarm', value: 'min' },
+            { label: 'Max Alarm', value: 'max' },
+            { label: 'Normal Range', value: 'normal' }
+          ].map(o => `
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+              <input type="checkbox" value="${escapeHtml(o.value)}" />
+              <span>${escapeHtml(o.label)}</span>
+            </label>
+          `).join('')}
+        </fieldset>
 
-        <div>
-          <label style="font-size:13px;color:var(--muted);">GSM</label>
-          <select id="fltM-gsm" class="graph-title-input">
-            <option value="">Any</option>
-            <option value="strong">Strong (&gt;70%)</option>
-            <option value="fair">Fair (30–70%)</option>
-            <option value="weak">Weak (&lt;30%)</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </div>
+        <!-- GSM group -->
+        <fieldset class="flt-group" data-key="gsmBands" style="border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;">
+          <legend style="color:var(--muted);font-size:13px;">GSM</legend>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="btn group-select-all" type="button">Select all</button>
+            <button class="btn group-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+          </div>
+          ${[
+            { label: 'Strong', value: 'strong' },
+            { label: 'Fair', value: 'fair' },
+            { label: 'Weak', value: 'weak' }
+          ].map(o => `
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+              <input type="checkbox" value="${escapeHtml(o.value)}" />
+              <span>${escapeHtml(o.label)}</span>
+            </label>
+          `).join('')}
+        </fieldset>
 
-        <div>
-          <label style="font-size:13px;color:var(--muted);">LPG Tank Type</label>
-          <select id="fltM-type" class="graph-title-input">
-            <option value="">Any</option>
-            <option value="Spherical">Spherical</option>
-            <option value="Cylindrical horizontal">Cylindrical horizontal</option>
-            <option value="Cylindrical vertical">Cylindrical vertical</option>
-          </select>
-        </div>
+        <!-- LPG Tank Type group -->
+        <fieldset class="flt-group" data-key="tankTypes" style="border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;">
+          <legend style="color:var(--muted);font-size:13px;">LPG Tank Type</legend>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="btn group-select-all" type="button">Select all</button>
+            <button class="btn group-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+          </div>
+          ${['Spherical','Cylindrical horizontal','Cylindrical vertical'].map(v => `
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+              <input type="checkbox" value="${escapeHtml(v)}" />
+              <span>${escapeHtml(v)}</span>
+            </label>
+          `).join('')}
+        </fieldset>
 
-        <div>
-          <label style="font-size:13px;color:var(--muted);">Gas Sensor Status</label>
-          <select id="fltM-gas" class="graph-title-input">
-            <option value="">Any</option>
-            <option value="online">Online</option>
-            <option value="offline">Offline</option>
-          </select>
-        </div>
+        <!-- Gas Sensor group -->
+        <fieldset class="flt-group" data-key="gasSensors" style="border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;">
+          <legend style="color:var(--muted);font-size:13px;">Gas Sensor Status</legend>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="btn group-select-all" type="button">Select all</button>
+            <button class="btn group-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+          </div>
+          ${[
+            { label: 'Online', value: 'online' },
+            { label: 'Offline', value: 'offline' }
+          ].map(o => `
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+              <input type="checkbox" value="${escapeHtml(o.value)}" />
+              <span>${escapeHtml(o.label)}</span>
+            </label>
+          `).join('')}
+        </fieldset>
 
-        <div>
-          <label style="font-size:13px;color:var(--muted);">Battery Level</label>
-          <select id="fltM-battery" class="graph-title-input">
-            <option value="">Any</option>
-            <option value="full">Full (≥50%)</option>
-            <option value="normal">Normal (20–50%)</option>
-            <option value="low">Low (&lt;20%)</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </div>
+        <!-- Battery Level group -->
+        <fieldset class="flt-group" data-key="batteryBands" style="border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;">
+          <legend style="color:var(--muted);font-size:13px;">Battery Level</legend>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="btn group-select-all" type="button">Select all</button>
+            <button class="btn group-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+          </div>
+          ${[
+            { label: 'Full', value: 'full' },
+            { label: 'Fair', value: 'fair' },
+            { label: 'Low', value: 'low' }
+          ].map(o => `
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+              <input type="checkbox" value="${escapeHtml(o.value)}" />
+              <span>${escapeHtml(o.label)}</span>
+            </label>
+          `).join('')}
+        </fieldset>
 
-        <div>
-          <label style="font-size:13px;color:var(--muted);">LPG Tank Capacity</label>
-          <select id="fltM-capacity" class="graph-title-input">
-            <option value="">Any</option>
-            <option value="lt500">&lt; 500</option>
-            <option value="500-1000">500–1000</option>
-            <option value="1000-2000">1000–2000</option>
-            <option value="gt2000">&gt; 2000</option>
-          </select>
-        </div>
+        <!-- Capacity band group -->
+        <fieldset class="flt-group" data-key="capacityBands" style="border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;">
+          <legend style="color:var(--muted);font-size:13px;">LPG Tank Capacity</legend>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="btn group-select-all" type="button">Select all</button>
+            <button class="btn group-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+          </div>
+          ${[
+            { label: '< 500', value: 'lt500' },
+            { label: '500–1000', value: '500-1000' },
+            { label: '1000–2000', value: '1000-2000' },
+            { label: '> 2000', value: 'gt2000' }
+          ].map(o => `
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+              <input type="checkbox" value="${escapeHtml(o.value)}" />
+              <span>${escapeHtml(o.label)}</span>
+            </label>
+          `).join('')}
+        </fieldset>
 
-        <div>
-          <label style="font-size:13px;color:var(--muted);">LPG Installation Type</label>
-          <select id="fltM-install" class="graph-title-input">
-            <option value="">Any</option>
-            <option value="A/G">A/G</option>
-            <option value="B/G">B/G</option>
-          </select>
-        </div>
+        <!-- Installation group -->
+        <fieldset class="flt-group" data-key="installTypes" style="border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;">
+          <legend style="color:var(--muted);font-size:13px;">LPG Installation Type</legend>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="btn group-select-all" type="button">Select all</button>
+            <button class="btn group-clear" type="button" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+          </div>
+          ${['A/G','B/G'].map(v => `
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+              <input type="checkbox" value="${escapeHtml(v)}" />
+              <span>${escapeHtml(v)}</span>
+            </label>
+          `).join('')}
+        </fieldset>
       </div>
 
       <div id="fltM-msg" class="history-msg" style="margin-top:12px;"></div>
@@ -3292,15 +3428,6 @@ function showFiltersModal() {
   const closeBtn = modal.querySelector('.history-close');
   const applyBtn = modal.querySelector('.filters-apply');
   const clearBtn = modal.querySelector('.filters-clear');
-
-  const emirateSel = modal.querySelector('#fltM-emirate');
-  const thresholdSel = modal.querySelector('#fltM-threshold');
-  const gsmSel = modal.querySelector('#fltM-gsm');
-  const typeSel = modal.querySelector('#fltM-type');
-  const gasSel = modal.querySelector('#fltM-gas');
-  const batterySel = modal.querySelector('#fltM-battery');
-  const capacitySel = modal.querySelector('#fltM-capacity');
-  const installSel = modal.querySelector('#fltM-install');
   const fltMsg = modal.querySelector('#fltM-msg');
 
   function removeModal() {
@@ -3311,30 +3438,51 @@ function showFiltersModal() {
   closeBtn.addEventListener('click', () => removeModal());
   modal.addEventListener('click', (e) => { if (e.target === modal) removeModal(); });
 
-  // Initialize controls with current filter state (single-selects)
-  emirateSel.value = filters.emirate || '';
-  thresholdSel.value = filters.thresholdStatus || '';
-  gsmSel.value = filters.gsmBand || '';
-  typeSel.value = filters.tankType || '';
-  gasSel.value = filters.gasSensor || '';
-  batterySel.value = filters.batteryBand || '';
-  capacitySel.value = filters.capacityBand || '';
-  installSel.value = filters.installType || '';
+  // Initialize checkbox states based on current filters
+  modal.querySelectorAll('.flt-group').forEach(group => {
+    const key = group.getAttribute('data-key');
+    const arr = (filters[key] && Array.isArray(filters[key])) ? filters[key] : [];
+    const inputs = group.querySelectorAll('input[type="checkbox"]');
+    inputs.forEach(inp => {
+      inp.checked = arr.includes(String(inp.value).trim());
+    });
+
+    // Group Select all / Clear handlers
+    const selectAllBtn = group.querySelector('.group-select-all');
+    const clearBtnLocal = group.querySelector('.group-clear');
+    if (selectAllBtn) {
+      selectAllBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        inputs.forEach(inp => { inp.checked = true; });
+      });
+    }
+    if (clearBtnLocal) {
+      clearBtnLocal.addEventListener('click', (e) => {
+        e.stopPropagation();
+        inputs.forEach(inp => { inp.checked = false; });
+      });
+    }
+  });
 
   function persistFilters() {
     try { localStorage.setItem(FILTERS_KEY, JSON.stringify(filters)); } catch (e) { /* ignore */ }
   }
 
+  function readGroupValues(groupEl) {
+    const out = [];
+    groupEl.querySelectorAll('input[type="checkbox"]').forEach(inp => {
+      if (inp.checked) out.push(String(inp.value).trim());
+    });
+    return out;
+  }
+
   applyBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    filters.emirate = emirateSel.value || '';
-    filters.thresholdStatus = thresholdSel.value || '';
-    filters.gsmBand = gsmSel.value || '';
-    filters.tankType = typeSel.value || '';
-    filters.gasSensor = gasSel.value || '';
-    filters.batteryBand = batterySel.value || '';
-    filters.capacityBand = capacitySel.value || '';
-    filters.installType = installSel.value || '';
+    // Read all groups
+    modal.querySelectorAll('.flt-group').forEach(group => {
+      const key = group.getAttribute('data-key');
+      filters[key] = readGroupValues(group);
+    });
 
     persistFilters();
     currentListPage = 1;
@@ -3345,7 +3493,32 @@ function showFiltersModal() {
 
   clearBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    filters = { ...defaultFilters };
+    // Clear arrays
+    modal.querySelectorAll('.flt-group').forEach(group => {
+      group.querySelectorAll('input[type="checkbox"]').forEach(inp => { inp.checked = false; });
+    });
+    // Reflect into filters and persist
+    filters.emirates = [];
+    filters.thresholdStatuses = [];
+    filters.gasSensors = [];
+    filters.batteryBands = [];
+    filters.gsmBands = [];
+    filters.capacityBands = [];
+    filters.tankTypes = [];
+    filters.installTypes = [];
+
+    // Legacy singles cleared as well
+    filters.emirate = '';
+    filters.thresholdStatus = '';
+    filters.gasSensor = '';
+    filters.batteryBand = '';
+    filters.gsmBand = '';
+    filters.capacityBand = '';
+    filters.tankType = '';
+    filters.installType = '';
+    filters.capacityMin = '';
+    filters.capacityMax = '';
+
     persistFilters();
     currentListPage = 1;
     renderListView();
