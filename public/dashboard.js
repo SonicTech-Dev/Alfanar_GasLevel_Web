@@ -36,6 +36,11 @@
   const backListBtn = document.getElementById('back-list');
   const backCardsBtn = document.getElementById('back-cards');
 
+  // Gas Details panel refs
+  const gasRefreshBtn = document.getElementById('gas-refresh-btn');
+  const gasTbody = document.getElementById('gas-details-tbody');
+  const gasNote = document.getElementById('gas-note');
+
   // In-memory catalog of devices keyed by terminal_id
   const devices = new Map();
 
@@ -91,6 +96,7 @@
         address: i ? (i.address || '') : '',
         lpg_min_level: i && i.lpg_min_level != null ? Number(i.lpg_min_level) : null,
         lpg_max_level: i && i.lpg_max_level != null ? Number(i.lpg_max_level) : null,
+        lpg_tank_capacity: i ? (i.lpg_tank_capacity || '') : '',
         _lastValueNumeric: null,
         _lastTimestamp: null
       });
@@ -115,6 +121,7 @@
         address: i.address || '',
         lpg_min_level: i.lpg_min_level != null ? Number(i.lpg_min_level) : null,
         lpg_max_level: i.lpg_max_level != null ? Number(i.lpg_max_level) : null,
+        lpg_tank_capacity: i.lpg_tank_capacity || '',
         _lastValueNumeric: null,
         _lastTimestamp: null
       });
@@ -137,6 +144,7 @@
           address: '',
           lpg_min_level: null,
           lpg_max_level: null,
+          lpg_tank_capacity: '',
           _lastValueNumeric: null,
           _lastTimestamp: null
         });
@@ -460,12 +468,69 @@
     backCardsBtn.addEventListener('click', (e) => { e.stopPropagation(); goHome('cards'); });
   }
 
+  /* ---------------------------
+     GAS DETAILS: Fetch and render
+     --------------------------- */
+
+  function round2(n) {
+    if (n == null || isNaN(n)) return null;
+    return Math.round(Number(n) * 100) / 100;
+  }
+
+  async function fetchConsumptionAll() {
+    return fetchJson('/api/consumption').catch(() => ({ rows: [] }));
+  }
+
+  function deviceLabelFor(tid) {
+    const d = devices.get(String(tid));
+    return d ? (d.title || d.site || d.terminal_id) : String(tid);
+  }
+
+  async function refreshGasDetails() {
+    if (!gasTbody) return;
+    try {
+      gasTbody.innerHTML = `<tr><td colspan="6" class="muted">Loading…</td></tr>`;
+      const data = await fetchConsumptionAll();
+      const rows = Array.isArray(data.rows) ? data.rows : (data.terminal_id ? [data] : []);
+      if (!rows.length) {
+        gasTbody.innerHTML = `<tr><td colspan="6" class="muted">No data</td></tr>`;
+        return;
+      }
+      const html = rows.map(r => {
+        const name = escapeHtml(deviceLabelFor(r.terminal_id));
+        const cap = (r.capacity_liters == null || isNaN(r.capacity_liters)) ? 'unknown' : String(round2(r.capacity_liters));
+        const dailyLiters = (r.daily && r.daily.liters != null && !isNaN(r.daily.liters)) ? String(round2(r.daily.liters)) : (r.daily && r.daily.percent_drop != null ? `${round2(r.daily.percent_drop)}%` : '—');
+        const avgLiters = (r.monthly && r.monthly.average_liters_per_day != null && !isNaN(r.monthly.average_liters_per_day)) ? String(round2(r.monthly.average_liters_per_day)) : (r.monthly && r.monthly.average_percent_per_day != null ? `${round2(r.monthly.average_percent_per_day)}%` : '—');
+        const total30 = (r.monthly && r.monthly.total_liters_30d != null && !isNaN(r.monthly.total_liters_30d)) ? String(round2(r.monthly.total_liters_30d)) : (r.monthly && r.monthly.total_percent_30d != null ? `${round2(r.monthly.total_percent_30d)}%` : '—');
+        const daysInc = (r.monthly && r.monthly.days_included != null) ? String(r.monthly.days_included) : '—';
+        return `
+          <tr>
+            <td class="muted">${name}</td>
+            <td class="muted">${cap}</td>
+            <td>${dailyLiters}</td>
+            <td>${avgLiters}</td>
+            <td>${total30}</td>
+            <td class="muted">${daysInc}</td>
+          </tr>
+        `;
+      }).join('');
+      gasTbody.innerHTML = html;
+    } catch (err) {
+      gasTbody.innerHTML = `<tr><td colspan="6" class="muted">Failed to load gas details: ${escapeHtml(err && err.message || 'Unknown')}</td></tr>`;
+    }
+  }
+
+  if (gasRefreshBtn) {
+    gasRefreshBtn.addEventListener('click', (e) => { e.stopPropagation(); refreshGasDetails(); });
+  }
+
   // Init flow
   (async function initDashboard() {
     try {
       await loadCatalog();
       setDefaultLocationIfAvailable();
       await refreshAll();
+      await refreshGasDetails();
       setInterval(() => { refreshAll().catch(() => {}); }, POLL_INTERVAL_MS);
     } catch (err) {
       try {

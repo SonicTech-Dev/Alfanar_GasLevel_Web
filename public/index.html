@@ -46,7 +46,7 @@
   </style>
 </head>
 <body>
-  <!-- LOGIN MODAL (very simple, client-side) -->
+  <!-- LOGIN MODAL (server-backed) -->
   <div id="login-modal" class="login-modal" role="dialog" aria-modal="true" aria-label="Login to Tank Level" style="display:none;">
     <div class="login-panel" role="document">
       <h2 style="margin:0 0 8px 0;">Please sign in</h2>
@@ -106,7 +106,7 @@
   </header>
 
   <main class="container">
-    <!-- LEGEND UI (in-page, inside .container) — using exact card visuals for swatches -->
+    <!-- LEGEND UI (in-page, inside .container) ��� using exact card visuals for swatches -->
     <details class="legend-panel" aria-label="Legend">
       <summary>Legend</summary>
       <div class="legend-content">
@@ -250,6 +250,11 @@
           <button id="admin-device-info-btn" class="btn" type="button" title="Device Information">Device Information</button>
         </div>
 
+        <!-- NEW: Change Password button (visible only to top admin Sonic) -->
+        <div style="margin-top:8px;">
+          <button id="admin-change-password-btn" class="btn" type="button" title="Change Password" style="display:none;">Change Password</button>
+        </div>
+
         <!-- Manage Site / Location form (visible to admins) -->
         <div style="margin-top:14px;">
           <strong style="display:block;margin-bottom:8px;color:var(--muted)">Manage Site / Location</strong>
@@ -285,6 +290,8 @@
     <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
       <button id="user-open-all-map" class="btn" type="button">Show All Devices Map</button>
       <button id="user-device-info-btn" class="btn" type="button" title="Device Information">Device Information</button>
+      <!-- NEW: Change Password (visible only to editor Alfanar_Admin1) -->
+      <button id="user-change-password-btn" class="btn" type="button" title="Change Password" style="display:none;">Change Password</button>
     </div>
   </div>
 </div>
@@ -309,17 +316,7 @@
 
   <script>
     (function () {
-      const USERNAME = 'Alfanar_GasLevel1';
-      const PASSWORD = 'GasLevel_Alfanar1';
-
-      // Additional normal-equivalent user (same access as USERNAME/PASSWORD)
-      const ALT_USERNAME = 'Alfanar_Admin1';
-      const ALT_PASSWORD = 'Admin_Alfanar1';
-
-      // Admin credentials (client-side example)
-      const ADMIN_USERNAME = 'Sonic';
-      const ADMIN_PASSWORD = 'Sonic@123';
-
+      // Server-backed login using /api/login
       const modal = document.getElementById('login-modal');
       const form = document.getElementById('login-form');
       const usernameInput = document.getElementById('login-username');
@@ -338,80 +335,53 @@
         document.body.classList.remove('modal-open');
       }
 
-      // Fire-and-forget logging helper. NEVER send passwords.
-      function logAttempt(username, isAdminAttempt, success, note) {
-        try {
-          const payload = {
-            username: String(username || '').trim(),
-            isAdminAttempt: !!isAdminAttempt,
-            success: !!success,
-            note: note ? String(note) : ''
-          };
-          // Fire and forget; do not await or block UI.
-          fetch('/api/login-attempt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          }).catch(() => { /* ignore logging errors */ });
-        } catch (e) { /* ignore */ }
-      }
-
       // Always require login on every page load: show modal immediately
       showModal();
 
-      // Form submit handler
-      form.addEventListener('submit', function (ev) {
+      // Form submit handler -> POST /api/login
+      form.addEventListener('submit', async function (ev) {
         ev.preventDefault();
         errorEl.style.display = 'none';
         const u = (usernameInput.value || '').trim();
         const p = (passwordInput.value || '').trim();
-        const isAdminAttempt = (u === ADMIN_USERNAME);
+        if (!u || !p) {
+          errorEl.textContent = 'Please enter username and password.';
+          errorEl.style.display = 'block';
+          return;
+        }
+        try {
+          const resp = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: u, password: p })
+          });
+          const json = await resp.json().catch(() => ({}));
+          if (!resp.ok || !json.ok) {
+            errorEl.textContent = json.error || 'Invalid username or password.';
+            errorEl.style.display = 'block';
+            passwordInput.value = '';
+            passwordInput.focus();
+            return;
+          }
 
-        // Admin exact-match check first
-        if (u === ADMIN_USERNAME && p === ADMIN_PASSWORD) {
-          // Log attempt (admin success)
-          logAttempt(u, true, true, 'admin login success');
+          // Role mapping: admin/editor/viewer
+          const role = String(json.role || '').trim();
 
           try { window._clientAuthenticated = true; } catch (e) { /* ignore */ }
-          try { window._clientIsAdmin = true; } catch (e) { /* ignore */ }
-          try { window._clientUsername = u; } catch (e) { /* ignore */ }
+          try { window._clientIsAdmin = (role === 'admin'); } catch (e) { /* ignore */ }
+          try { window._clientUsername = json.username || u; } catch (e) { /* ignore */ }
 
           hideModal();
 
-          // dispatch event that the rest of the app can listen to
+          // Dispatch event that the rest of the app can listen to
           try { window.dispatchEvent(new Event('app:login')); } catch (e) { /* ignore */ }
 
           // If the app exposes a start function, call it immediately
           try { if (typeof window.appStart === 'function') window.appStart(); } catch (e) { /* ignore */ }
-          return;
+        } catch (err) {
+          errorEl.textContent = 'Login failed. Please try again.';
+          errorEl.style.display = 'block';
         }
-
-        // simple exact-match check for normal user (accepts either USERNAME or ALT_USERNAME)
-        if ((u === USERNAME && p === PASSWORD) || (u === ALT_USERNAME && p === ALT_PASSWORD)) {
-          // Log attempt (normal user success)
-          logAttempt(u, false, true, 'user login success');
-
-          try { window._clientAuthenticated = true; } catch (e) { /* ignore */ }
-          try { window._clientIsAdmin = false; } catch (e) { /* ignore */ }
-          try { window._clientUsername = u; } catch (e) { /* ignore */ }
-
-          hideModal();
-
-          // dispatch event that the rest of the app can listen to
-          try { window.dispatchEvent(new Event('app:login')); } catch (e) { /* ignore */ }
-
-          // If the app exposes a start function, call it immediately
-          try { if (typeof window.appStart === 'function') window.appStart(); } catch (e) { /* ignore */ }
-          return;
-        }
-
-        // wrong credentials - log failure (mark as admin attempt if username matched admin user)
-        logAttempt(u, isAdminAttempt, false, 'invalid username/password');
-
-        errorEl.textContent = 'Invalid username or password.';
-        errorEl.style.display = 'block';
-        passwordInput.value = '';
-        passwordInput.focus();
       });
 
       cancelBtn.addEventListener('click', function () {
@@ -430,6 +400,183 @@
           ev.preventDefault();
         }
       });
+
+      // Utility: password policy validation
+      function isStrongPassword(pw) {
+        if (!pw || pw.length < 8) return false;
+        const hasLower = /[a-z]/.test(pw);
+        const hasUpper = /[A-Z]/.test(pw);
+        const hasDigit = /[0-9]/.test(pw);
+        return hasLower && hasUpper && hasDigit;
+      }
+
+      // Show Change Password modal
+      function showPasswordModal() {
+        const actor = (window._clientUsername || '').trim();
+        const isAdmin = !!window._clientIsAdmin;
+        const modalWrap = document.createElement('div');
+        modalWrap.className = 'history-modal';
+        // Build role-based target options
+        const targets = [];
+        if (actor === 'Sonic' && isAdmin) {
+          targets.push({ value: 'Sonic', label: 'Admin Password (Sonic)' });
+          targets.push({ value: 'Alfanar_Admin1', label: 'Editor Password (Alfanar_Admin1)' });
+          targets.push({ value: 'Alfanar_GasLevel1', label: 'Viewer Password (Alfanar_GasLevel1)' });
+        } else if (actor === 'Alfanar_Admin1') {
+          targets.push({ value: 'Alfanar_Admin1', label: 'Admin Password' });
+          targets.push({ value: 'Alfanar_GasLevel1', label: 'Viewer Password' });
+        } else {
+          // No permission: do not open
+          alert('You do not have permission to change passwords.');
+          return;
+        }
+
+        const optionsHtml = targets.map(t => `<option value="${t.value}">${t.label}</option>`).join('');
+        modalWrap.innerHTML = `
+          <div class="history-panel" role="dialog" aria-modal="true" aria-label="Change Password">
+            <div class="history-actions">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <strong>Change Password</strong>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <div class="history-controls">
+                  <button class="history-close" type="button">Close</button>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr; gap:16px;">
+              <div style="grid-column: 1 / -1;">
+                <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">Target</label>
+                <select id="pw-target" class="graph-title-input">${optionsHtml}</select>
+              </div>
+
+              <div>
+                <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">Current Password</label>
+                <input id="pw-current" type="password" class="graph-title-input" placeholder="Enter your current password" />
+              </div>
+
+              <div>
+                <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">New Password</label>
+                <input id="pw-new" type="password" class="graph-title-input" placeholder="Create new password" />
+              </div>
+
+              <div style="grid-column: 1 / -1;">
+                <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">Confirm New Password</label>
+                <input id="pw-confirm" type="password" class="graph-title-input" placeholder="Repeat new password" />
+              </div>
+            </div>
+
+            <div style="display:flex;gap:8px;align-items:center;margin-top:12px;">
+              <button id="pw-save" class="btn" type="button" disabled>Save</button>
+              <div id="pw-msg" class="history-msg" style="margin-top:0;"></div>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(modalWrap);
+        document.body.classList.add('modal-open');
+
+        const closeBtn = modalWrap.querySelector('.history-close');
+        const saveBtn = modalWrap.querySelector('#pw-save');
+        const targetSel = modalWrap.querySelector('#pw-target');
+        const currentInput = modalWrap.querySelector('#pw-current');
+        const newInput = modalWrap.querySelector('#pw-new');
+        const confirmInput = modalWrap.querySelector('#pw-confirm');
+        const msgEl = modalWrap.querySelector('#pw-msg');
+
+        function cleanup() {
+          modalWrap.remove();
+          document.body.classList.remove('modal-open');
+        }
+        closeBtn.addEventListener('click', cleanup);
+        modalWrap.addEventListener('click', (e) => { if (e.target === modalWrap) cleanup(); });
+
+        function validateForm() {
+          const curOk = (currentInput.value || '').trim().length > 0;
+          const newPw = (newInput.value || '').trim();
+          const conf = (confirmInput.value || '').trim();
+          const strong = isStrongPassword(newPw);
+          const match = newPw.length > 0 && newPw === conf;
+          if (!strong) {
+            msgEl.textContent = 'Password must be at least 8 characters, with lowercase, uppercase, and a number.';
+            msgEl.style.color = '#ffdede';
+          } else if (!match) {
+            msgEl.textContent = 'Passwords do not match.';
+            msgEl.style.color = '#ffdede';
+          } else {
+            msgEl.textContent = '';
+          }
+          saveBtn.disabled = !(curOk && strong && match);
+        }
+
+        [currentInput, newInput, confirmInput].forEach(inp => {
+          inp.addEventListener('input', validateForm);
+        });
+        validateForm();
+
+        saveBtn.addEventListener('click', async () => {
+          const actorUsername = (window._clientUsername || '').trim();
+          const targetUsername = targetSel.value;
+          const currentPassword = (currentInput.value || '').trim();
+          const newPassword = (newInput.value || '').trim();
+          msgEl.textContent = 'Saving…';
+          msgEl.style.color = 'var(--muted)';
+
+          try {
+            const resp = await fetch('/api/password/change', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ actorUsername, targetUsername, currentPassword, newPassword })
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok || !json.ok) {
+              msgEl.textContent = json.error || 'Failed to change password.';
+              msgEl.style.color = '#ffdede';
+              return;
+            }
+            msgEl.textContent = 'Password changed successfully.';
+            msgEl.style.color = '#22c55e';
+
+            // If the user changed their own password, force re-login
+            if (actorUsername === targetUsername) {
+              setTimeout(() => {
+                try { window._clientAuthenticated = false; } catch (e) {}
+                try { window._clientIsAdmin = false; } catch (e) {}
+                try { window._clientUsername = ''; } catch (e) {}
+                cleanup();
+                // Show login modal again
+                showModal();
+              }, 800);
+            } else {
+              setTimeout(() => cleanup(), 800);
+            }
+          } catch (err) {
+            msgEl.textContent = 'Error: ' + (err && err.message ? err.message : 'Unknown');
+            msgEl.style.color = '#ffdede';
+          }
+        });
+      }
+
+      // Display the Change Password buttons based on role/username
+      function updateChangePasswordButtonsVis() {
+        const actor = (window._clientUsername || '').trim();
+        const adminBtn = document.getElementById('admin-change-password-btn');
+        const userBtn = document.getElementById('user-change-password-btn');
+        if (adminBtn) {
+          // Only Sonic (top admin)
+          adminBtn.style.display = (actor === 'Sonic') ? '' : 'none';
+          adminBtn.onclick = (e) => { e.stopPropagation(); showPasswordModal(); };
+        }
+        if (userBtn) {
+          // Only editor Alfanar_Admin1
+          userBtn.style.display = (actor === 'Alfanar_Admin1') ? '' : 'none';
+          userBtn.onclick = (e) => { e.stopPropagation(); showPasswordModal(); };
+        }
+      }
+
+      // Update buttons once on login and on page load (in case of rapid init)
+      window.addEventListener('app:login', updateChangePasswordButtonsVis);
+      document.addEventListener('DOMContentLoaded', updateChangePasswordButtonsVis);
     })();
   </script>
 

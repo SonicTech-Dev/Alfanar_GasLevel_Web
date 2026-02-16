@@ -1250,3 +1250,53 @@ select.graph-title-input {
 /* ==========================
    END LIST VIEW STYLES
    ========================== */
+
+/* ==========================
+   NEW: GAS DETAILS PANEL (Dashboard)
+   ========================== */
+
+.gas-panel .panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gas-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.gas-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+.gas-table thead th {
+  text-align: left;
+  padding: 10px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: var(--muted);
+  font-weight: 700;
+}
+.gas-table tbody td {
+  padding: 10px 10px;
+  border-top: 1px solid rgba(255,255,255,0.02);
+  vertical-align: middle;
+}
+.gas-table .muted { color: var(--muted); }
+
+.gas-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Responsive tweaks for gas table */
+@media (max-width:900px){
+  .gas-table thead { display: none; }
+  .gas-table tbody tr { display: block; margin-bottom: 12px; }
+  .gas-table tbody td { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; }
+}

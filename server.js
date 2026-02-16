@@ -13,6 +13,9 @@ const ping = require('ping');
 // Replace raw ws with socket.io
 const { Server: SocketIO } = require('socket.io');
 
+// NEW: bcryptjs for credential hashing/verification (portable)
+const bcrypt = require('bcryptjs');
+
 const app = express();
 const PORT = process.env.PORT || 3007;
 
@@ -252,12 +255,76 @@ async function createTankDocumentsTableIfNeeded() {
   }
 }
 
+/* NEW: Ensure tank_credentials table exists (username/password/role) and seed users */
+async function createTankCredentialsTableIfNeeded() {
+  const createSql = `
+    CREATE TABLE IF NOT EXISTS tank_credentials (
+      id SERIAL PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('admin','editor','viewer')),
+      disabled BOOLEAN NOT NULL DEFAULT FALSE,
+      last_login_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS tank_credentials_username_idx ON tank_credentials (username);
+  `;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(createSql);
+      console.log('Ensured tank_credentials table exists');
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Failed to create tank_credentials table:', err && err.message);
+  }
+}
+
+/* Seed default credentials if missing.
+   Users:
+   - Sonic (admin) / password: Sonic@123
+   - Alfanar_Admin1 (editor) / password: Admin_Alfanar1
+   - Alfanar_GasLevel1 (viewer) / password: GasLevel_Alfanar1
+*/
+async function seedDefaultCredentialsIfMissing() {
+  const defaults = [
+    { username: 'Sonic', role: 'admin', password: 'Sonic@123' },
+    { username: 'Alfanar_Admin1', role: 'editor', password: 'Admin_Alfanar1' },
+    { username: 'Alfanar_GasLevel1', role: 'viewer', password: 'GasLevel_Alfanar1' },
+  ];
+  const saltRounds = Math.max(8, parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10));
+  const client = await pool.connect();
+  try {
+    for (const u of defaults) {
+      try {
+        const exists = await client.query(`SELECT id FROM tank_credentials WHERE username = $1 LIMIT 1`, [u.username]);
+        if (exists.rows && exists.rows.length > 0) {
+          continue;
+        }
+        const hash = await bcrypt.hash(u.password, saltRounds);
+        await client.query(
+          `INSERT INTO tank_credentials (username, password_hash, role) VALUES ($1, $2, $3)`,
+          [u.username, hash, u.role]
+        );
+        console.log(`Seeded credential for ${u.username} (${u.role})`);
+      } catch (err) {
+        console.warn('Seed credential error', u.username, err && err.message);
+      }
+    }
+  } finally {
+    client.release();
+  }
+}
+
 // attempt to create the table on startup (non-blocking)
 createLoginAttemptsTableIfNeeded().catch(e => console.warn('Create table error', e && e.message));
 createSitesTableIfNeeded().catch(e => console.warn('Create sites table error', e && e.message));
-createTitlesTableIfNeeded().catch(e => console.warn('Create titles table error', e && e.message));
+createTitlesTableIfNeeded().catch(e => console.warn('Create tank_titles table error', e && e.message));
 createTankInfoTableIfNeeded().catch(e => console.warn('Create tank_info table error', e && e.message));
 createTankDocumentsTableIfNeeded().catch(e => console.warn('Create tank_documents table error', e && e.message));
+createTankCredentialsTableIfNeeded().then(seedDefaultCredentialsIfMissing).catch(e => console.warn('Create/seed tank_credentials error', e && e.message));
 
 /* XML helpers */
 function nodeText(v) {
@@ -689,10 +756,10 @@ if (pollOnStartup) {
 }
 
 /* -------------------------
-   NEW: Login attempt endpoints
+   NEW: Login (DB-backed) endpoint
    ------------------------- */
 
- // Helper to get client IP (respect x-forwarded-for if behind proxy)
+// Helper to get client IP (respect x-forwarded-for if behind proxy)
 function getRequestIp(req) {
   const xf = req.headers['x-forwarded-for'];
   if (xf && typeof xf === 'string') {
@@ -702,6 +769,86 @@ function getRequestIp(req) {
   if (req.connection && req.connection.remoteAddress) return req.connection.remoteAddress;
   return null;
 }
+
+// POST /api/login
+// Body: { username, password }
+// Returns: { ok: true, username, role }
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    const u = (username || '').trim();
+    const p = String(password || '');
+
+    if (!u || !p) {
+      return res.status(400).json({ error: 'username and password are required' });
+    }
+
+    const client = await pool.connect();
+    try {
+      const r = await client.query(
+        `SELECT id, username, password_hash, role, disabled FROM tank_credentials WHERE username = $1 LIMIT 1`,
+        [u]
+      );
+      if (!r.rows || r.rows.length === 0) {
+        // log failure
+        try {
+          const ip = getRequestIp(req) || null;
+          const userAgent = req.get('user-agent') || null;
+          await client.query(
+            `INSERT INTO login_attempts (username, is_admin_attempt, success, user_agent, ip, note) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [u, false, false, userAgent, ip, 'invalid username/password']
+          );
+        } catch (e) { /* ignore logging errors */ }
+        return res.status(401).json({ error: 'Invalid username or password' });
+      }
+      const row = r.rows[0];
+      if (row.disabled) {
+        try {
+          const ip = getRequestIp(req) || null;
+          const userAgent = req.get('user-agent') || null;
+          await client.query(
+            `INSERT INTO login_attempts (username, is_admin_attempt, success, user_agent, ip, note) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [u, row.role === 'admin', false, userAgent, ip, 'account disabled']
+          );
+        } catch (e) { /* ignore */ }
+        return res.status(403).json({ error: 'Account disabled' });
+      }
+
+      const ok = await bcrypt.compare(p, row.password_hash);
+      const isAdminRole = row.role === 'admin';
+
+      // log attempt
+      try {
+        const ip = getRequestIp(req) || null;
+        const userAgent = req.get('user-agent') || null;
+        await client.query(
+          `INSERT INTO login_attempts (username, is_admin_attempt, success, user_agent, ip, note) VALUES ($1, $2, $3, $4, $5, $6)`,
+          [u, isAdminRole, !!ok, userAgent, ip, ok ? 'user login success' : 'invalid username/password']
+        );
+      } catch (e) { /* ignore logging errors */ }
+
+      if (!ok) {
+        return res.status(401).json({ error: 'Invalid username or password' });
+      }
+
+      // update last_login_at
+      try {
+        await client.query(`UPDATE tank_credentials SET last_login_at = now() WHERE id = $1`, [row.id]);
+      } catch (e) { /* ignore */ }
+
+      return res.json({ ok: true, username: row.username, role: row.role });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('POST /api/login failed:', err && err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/* -------------------------
+   NEW/EXISTING: Login attempt endpoints (unchanged)
+   ------------------------- */
 
 // POST /api/login-attempt
 // Expected JSON body: { username: string, isAdminAttempt: boolean, success: boolean, note?: string }
@@ -1753,3 +1900,197 @@ async function shutdown() {
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+/* ----------------------------------------
+   NEW: Gas consumption endpoint (/api/consumption)
+   ---------------------------------------- */
+
+// Helper: parse liters from a free-form capacity string (e.g., "2000 L", "2,000 liters")
+function parseCapacityLiters(s) {
+  if (s == null) return null;
+  const str = String(s).trim();
+  if (!str) return null;
+  const m = str.replace(/,/g, '').match(/-?\d+(\.\d+)?/);
+  if (!m) return null;
+  const n = parseFloat(m[0]);
+  return isNaN(n) ? null : n;
+}
+
+// Cache (TTL in ms)
+const CONSUMPTION_CACHE_TTL_MS = Math.max(1000, parseInt(process.env.CONSUMPTION_CACHE_TTL_MS || '60000', 10));
+const consumptionCache = new Map(); // key -> { expiresAt, data }
+
+function cacheKey(terminalId, sinceIso, untilIso) {
+  return `${terminalId || 'ALL'}|${sinceIso || ''}|${untilIso || ''}`;
+}
+
+function isExpired(entry) {
+  return !entry || !entry.expiresAt || Date.now() > entry.expiresAt;
+}
+
+// Compute daily percent drops from sorted rows within each calendar day (UTC).
+function computeDailySeries(rows) {
+  // rows: [{ timestamp: iso, tank_level: number|null }]
+  const byDay = new Map(); // YYYY-MM-DD -> array of numeric levels in time order
+  rows.forEach(r => {
+    const ts = normalizeDbTimestampToIso(r.timestamp);
+    if (!ts) return;
+    const day = ts.slice(0, 10); // YYYY-MM-DD
+    const lvl = (r.tank_level === null || r.tank_level === undefined) ? null : Number(r.tank_level);
+    if (lvl == null || isNaN(lvl)) return;
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day).push(lvl);
+  });
+
+  // Ensure levels are in order; percent drop per day sums only negative deltas (ignore increases), include tiny negatives.
+  const result = [];
+  for (const [day, levels] of byDay.entries()) {
+    // levels already in chronological order because query sorted ASC by timestamp
+    let drop = 0;
+    for (let i = 1; i < levels.length; i++) {
+      const prev = levels[i - 1];
+      const next = levels[i];
+      const delta = next - prev;
+      if (delta < 0) {
+        drop += Math.abs(delta);
+      } else {
+        // ignore increases; do not subtract tiny negatives anywhere else
+      }
+    }
+    result.push({ day, percentDrop: drop, readings: levels.length });
+  }
+
+  // Sort by day ascending
+  result.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  return result;
+}
+
+app.get('/api/consumption', async (req, res) => {
+  try {
+    const terminalIdParam = req.query.terminalId ? String(req.query.terminalId).trim() : null;
+
+    // Define window: last 30 full days (exclude today)
+    const now = new Date();
+    const todayUtcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const until = todayUtcMidnight; // exclusive upper bound (today)
+    const since = new Date(todayUtcMidnight.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days prior
+
+    const sinceIso = since.toISOString();
+    const untilIso = until.toISOString();
+
+    const key = cacheKey(terminalIdParam, sinceIso, untilIso);
+    const cached = consumptionCache.get(key);
+    if (cached && !isExpired(cached)) {
+      return res.json(cached.data);
+    }
+
+    const client = await pool.connect();
+    try {
+      // Determine terminals
+      let terminalIds = [];
+      if (terminalIdParam) {
+        terminalIds = [terminalIdParam];
+      } else {
+        const rInfo = await client.query(`SELECT terminal_id FROM tank_info WHERE terminal_id IS NOT NULL`);
+        const rLevel = await client.query(`
+          SELECT DISTINCT id AS terminal_id
+          FROM tank_level
+          WHERE "current_timestamp" >= (now() - interval '60 days')
+        `);
+        const set = new Set();
+        (rInfo.rows || []).forEach(row => { if (row.terminal_id) set.add(String(row.terminal_id)); });
+        (rLevel.rows || []).forEach(row => { if (row.terminal_id) set.add(String(row.terminal_id)); });
+        terminalIds = Array.from(set);
+      }
+
+      // Capacity map
+      const capMap = new Map();
+      if (terminalIds.length) {
+        const qCap = await client.query(`SELECT terminal_id, lpg_tank_capacity FROM tank_info WHERE terminal_id = ANY($1::text[])`, [terminalIds]);
+        (qCap.rows || []).forEach(row => {
+          capMap.set(String(row.terminal_id), parseCapacityLiters(row.lpg_tank_capacity));
+        });
+      }
+
+      // Build responses
+      const rowsOut = [];
+      const MIN_READINGS_PER_DAY = Math.max(1, parseInt(process.env.CONSUMPTION_MIN_READINGS_PER_DAY || '3', 10));
+
+      for (const tid of terminalIds) {
+        // Fetch rows for window sorted ascending
+        const q = `
+          SELECT "current_timestamp" AS ts, tank_level
+          FROM tank_level
+          WHERE id = $1
+            AND "current_timestamp" >= $2
+            AND "current_timestamp" < $3
+          ORDER BY "current_timestamp" ASC
+        `;
+        const r = await client.query(q, [String(tid), sinceIso, untilIso]);
+        const rows = (r.rows || []).map(rr => ({
+          timestamp: normalizeDbTimestampToIso(rr.ts),
+          tank_level: rr.tank_level === null || rr.tank_level === undefined ? null : Number(rr.tank_level)
+        }));
+
+        const dailySeries = computeDailySeries(rows); // [{ day, percentDrop, readings }]
+        // Daily: pick the most recent completed day (yesterday) if present
+        const yesterday = new Date(until.getTime() - (24 * 60 * 60 * 1000));
+        const yesterdayKey = yesterday.toISOString().slice(0, 10);
+        const dailyEntry = dailySeries.find(d => d.day === yesterdayKey) || null;
+
+        const capacityLiters = capMap.has(String(tid)) ? capMap.get(String(tid)) : null;
+
+        let dailyOut = null;
+        if (dailyEntry) {
+          const liters = (capacityLiters != null && !isNaN(capacityLiters)) ? (capacityLiters * (dailyEntry.percentDrop / 100.0)) : null;
+          dailyOut = {
+            date: dailyEntry.day,
+            percent_drop: dailyEntry.percentDrop,
+            liters: liters,
+            readings: dailyEntry.readings
+          };
+        }
+
+        // Monthly averages over last 30 days
+        const daysIncluded = dailySeries.filter(d => d.readings >= MIN_READINGS_PER_DAY);
+        const avgPercentPerDay = daysIncluded.length
+          ? (daysIncluded.reduce((sum, d) => sum + d.percentDrop, 0) / daysIncluded.length)
+          : null;
+        const totalPercent30d = dailySeries.reduce((sum, d) => sum + d.percentDrop, 0);
+
+        let avgLitersPerDay = null;
+        let totalLiters30d = null;
+        if (capacityLiters != null && !isNaN(capacityLiters)) {
+          avgLitersPerDay = (avgPercentPerDay != null) ? (capacityLiters * (avgPercentPerDay / 100.0)) : null;
+          totalLiters30d = capacityLiters * (totalPercent30d / 100.0);
+        }
+
+        rowsOut.push({
+          terminal_id: String(tid),
+          capacity_liters: capacityLiters,
+          daily: dailyOut,
+          monthly: {
+            average_liters_per_day: avgLitersPerDay,
+            average_percent_per_day: avgPercentPerDay,
+            total_liters_30d: totalLiters30d,
+            total_percent_30d: totalPercent30d,
+            days_included: daysIncluded.length,
+            days_total: dailySeries.length
+          }
+        });
+      }
+
+      const out = terminalIdParam
+        ? (rowsOut[0] || { terminal_id: terminalIdParam, capacity_liters: null, daily: null, monthly: { average_liters_per_day: null, average_percent_per_day: null, total_liters_30d: null, total_percent_30d: null, days_included: 0, days_total: 0 } })
+        : { rows: rowsOut };
+
+      consumptionCache.set(key, { expiresAt: Date.now() + CONSUMPTION_CACHE_TTL_MS, data: out });
+      return res.json(out);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/consumption failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to compute consumption' });
+  }
+});
