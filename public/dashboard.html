@@ -289,9 +289,13 @@
         <h1>Dashboard</h1>
       </div>
       <div class="header-actions">
-        <!-- Back to List and Back to Cards buttons -->
-        <button class="btn" id="back-list" type="button" title="Back to List view">↩ List</button>
-        <button class="btn" id="back-cards" type="button" title="Back to Cards view">↩ Cards</button>
+        <!-- Add Document Tracker and rename navigation buttons -->
+        <a class="btn" id="dash-docs" href="/Document-Tracker" title="Open Document Tracker" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);text-decoration:none;display:inline-flex;align-items:center;gap:8px;">
+          <span aria-hidden="true">📄</span>
+          <span>Document Tracker</span>
+        </a>
+        <button class="btn" id="back-list" type="button" title="Back to List view">↩ List View</button>
+        <button class="btn" id="back-cards" type="button" title="Back to Cards view">↩ Card View</button>
       </div>
     </div>
   </header>

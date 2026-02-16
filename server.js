@@ -215,11 +215,49 @@ async function createTankInfoTableIfNeeded() {
   }
 }
 
+/* NEW: Ensure tank_documents table exists (Document Tracker data) */
+async function createTankDocumentsTableIfNeeded() {
+  const createSql = `
+    CREATE TABLE IF NOT EXISTS tank_documents (
+      id SERIAL PRIMARY KEY,
+      sn TEXT NOT NULL,
+      building_type TEXT,
+      building_code TEXT,
+      building_name TEXT,
+      latitude DOUBLE PRECISION,
+      longitude DOUBLE PRECISION,
+      istifaa_expiry_date DATE,
+      amc_expiry_date DATE,
+      doe_noc_expiry_date DATE,
+      coc_expiry_date DATE,
+      tpi_expiry_date DATE,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT uniq_sn_building UNIQUE (sn, building_code)
+    );
+    CREATE INDEX IF NOT EXISTS tank_documents_sn_idx ON tank_documents (sn);
+    CREATE INDEX IF NOT EXISTS tank_documents_building_code_idx ON tank_documents (building_code);
+  `;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(createSql);
+      console.log('Ensured tank_documents table exists');
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Failed to create tank_documents table:', err && err.message);
+  }
+}
+
 // attempt to create the table on startup (non-blocking)
 createLoginAttemptsTableIfNeeded().catch(e => console.warn('Create table error', e && e.message));
 createSitesTableIfNeeded().catch(e => console.warn('Create sites table error', e && e.message));
 createTitlesTableIfNeeded().catch(e => console.warn('Create titles table error', e && e.message));
 createTankInfoTableIfNeeded().catch(e => console.warn('Create tank_info table error', e && e.message));
+createTankDocumentsTableIfNeeded().catch(e => console.warn('Create tank_documents table error', e && e.message));
 
 /* XML helpers */
 function nodeText(v) {
@@ -559,7 +597,7 @@ async function maybeSendAlarms(client, reading) {
         if (transporter) {
           try {
             const subject = `ALARM: Terminal ${tid} above maximum (${val}% > ${max}%)`;
-            const text = `Terminal ${tid} reported a level of ${val}%, which is above the configured maximum of ${max}%.\n\nTime: ${now.toISOString()}\n\nThis is an automated alarm.`;
+            const text = `Terminal ${tid} reported a level of ${val}%, which is above the configured maximum of ${max}%).\n\nTime: ${now.toISOString()}\n\nThis is an automated alarm.`;
             await sendAlarmEmail(email, subject, text, `<p>${text.replace(/\n/g,'<br>')}</p>`);
             // update last_max_alarm_sent_at
             await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = now() WHERE terminal_id = $1`, [tid]).catch(()=>{});
@@ -1009,7 +1047,7 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
           alarm_email = EXCLUDED.alarm_email,
           project_code = EXCLUDED.project_code,
           emirate = EXCLUDED.emirate
-        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate, created_at;
+        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_tank_installation, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate, created_at;
       `;
       const params = [terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate];
       const r = await client.query(q, params);
@@ -1024,7 +1062,7 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
         lpg_tank_capacity: row.lpg_tank_capacity,
         lpg_tank_details: row.lpg_tank_details,
         lpg_tank_type: row.lpg_tank_type,
-        lpg_installation_type: row.lpg_tank_installation || row.lpg_installation_type,
+        lpg_tank_installation: row.lpg_tank_installation || row.lpg_installation_type,
         notes: row.notes || null,
         lpg_min_level: row.lpg_min_level === null || row.lpg_min_level === undefined ? null : Number(row.lpg_min_level),
         lpg_max_level: row.lpg_max_level === null || row.lpg_max_level === undefined ? null : Number(row.lpg_max_level),
@@ -1178,6 +1216,236 @@ app.get('/api/tank-by-sn', async (req, res) => {
   } catch (err) {
     console.warn('GET /api/tank-by-sn failed:', err && err.message);
     return res.status(500).json({ error: 'failed to fetch terminal by sn' });
+  }
+});
+
+/* -------------------------
+   NEW: Document Tracker API (tank_documents)
+   ------------------------- */
+
+function parseDateOrNull(s) {
+  if (s == null || String(s).trim() === '') return null;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+function computeStatusForDate(isoDate) {
+  if (!isoDate) return 'unknown';
+  const today = new Date();
+  const d = new Date(isoDate + 'T00:00:00Z');
+  const diffDays = Math.ceil((d.getTime() - today.getTime()) / 86400000);
+  if (diffDays < 0) return 'expired';
+  if (diffDays <= 30) return 'renewal';
+  return 'valid';
+}
+function rowWithStatuses(r) {
+  return {
+    id: r.id,
+    sn: r.sn,
+    building_type: r.building_type,
+    building_code: r.building_code,
+    building_name: r.building_name,
+    latitude: r.latitude === null || r.latitude === undefined ? null : Number(r.latitude),
+    longitude: r.longitude === null || r.longitude === undefined ? null : Number(r.longitude),
+    istifaa_expiry_date: r.istifaa_expiry_date,
+    amc_expiry_date: r.amc_expiry_date,
+    doe_noc_expiry_date: r.doe_noc_expiry_date,
+    coc_expiry_date: r.coc_expiry_date,
+    tpi_expiry_date: r.tpi_expiry_date,
+    notes: r.notes || null,
+    created_at: normalizeDbTimestampToIso(r.created_at),
+    updated_at: normalizeDbTimestampToIso(r.updated_at),
+    statuses: {
+      istifaa: computeStatusForDate(r.istifaa_expiry_date),
+      amc: computeStatusForDate(r.amc_expiry_date),
+      doe_noc: computeStatusForDate(r.doe_noc_expiry_date),
+      coc: computeStatusForDate(r.coc_expiry_date),
+      tpi: computeStatusForDate(r.tpi_expiry_date),
+    }
+  };
+}
+
+// LIST with optional search
+app.get('/api/tank-documents', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '200', 10) || 1, 1), 2000);
+    const offset = Math.max(parseInt(req.query.offset || '0', 10) || 0, 0);
+    const q = (req.query.q || '').toString().trim();
+
+    const client = await pool.connect();
+    try {
+      let sql = `
+        SELECT id, sn, building_type, building_code, building_name, latitude, longitude,
+               istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
+               notes, created_at, updated_at
+        FROM tank_documents
+      `;
+      const params = [];
+      if (q) {
+        sql += ` WHERE sn ILIKE $1 OR building_code ILIKE $1 OR building_name ILIKE $1 `;
+        params.push(`%${q}%`);
+      }
+      sql += ` ORDER BY updated_at DESC, id DESC LIMIT ${limit} OFFSET ${offset}`;
+      const r = await client.query(sql, params);
+      const rows = (r.rows || []).map(rowWithStatuses);
+      res.json({ count: rows.length, rows });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/tank-documents failed:', err && err.message);
+    res.status(500).json({ error: 'failed to fetch tank documents' });
+  }
+});
+
+app.get('/api/tank-documents/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+    const client = await pool.connect();
+    try {
+      const r = await client.query(
+        `SELECT id, sn, building_type, building_code, building_name, latitude, longitude,
+                istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
+                notes, created_at, updated_at
+         FROM tank_documents WHERE id = $1 LIMIT 1`, [id]
+      );
+      if (!r.rows || r.rows.length === 0) return res.status(404).json({ error: 'not found' });
+      res.json(rowWithStatuses(r.rows[0]));
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/tank-documents/:id failed:', err && err.message);
+    res.status(500).json({ error: 'failed to fetch tank document' });
+  }
+});
+
+app.post('/api/tank-documents', express.json(), async (req, res) => {
+  try {
+    const b = req.body || {};
+    // SN is now auto-generated server-side; ignore any client-sent sn
+
+    const building_type = b.building_type == null ? null : String(b.building_type).trim();
+    const building_code = b.building_code == null ? null : String(b.building_code).trim();
+    const building_name = b.building_name == null ? null : String(b.building_name).trim();
+    const latitude = b.latitude == null || b.latitude === '' ? null : Number(b.latitude);
+    const longitude = b.longitude == null || b.longitude === '' ? null : Number(b.longitude);
+    const istifaa_expiry_date = parseDateOrNull(b.istifaa_expiry_date);
+    const amc_expiry_date = parseDateOrNull(b.amc_expiry_date);
+    const doe_noc_expiry_date = parseDateOrNull(b.doe_noc_expiry_date);
+    const coc_expiry_date = parseDateOrNull(b.coc_expiry_date);
+    const tpi_expiry_date = parseDateOrNull(b.tpi_expiry_date);
+    const notes = b.notes == null ? null : String(b.notes).trim();
+
+    const client = await pool.connect();
+    try {
+      // Auto-generate SN: next integer starting at 1.
+      // We extract digits from existing sn values to be tolerant if any legacy non-numeric sn exist.
+      const q = `
+        INSERT INTO tank_documents
+          (sn, building_type, building_code, building_name, latitude, longitude,
+           istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
+           notes, created_at, updated_at)
+        VALUES (
+          (SELECT COALESCE(MAX(CAST(regexp_replace(sn, '\\D', '', 'g') AS INTEGER)), 0) + 1 FROM tank_documents),
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()
+        )
+        ON CONFLICT (sn, building_code) DO UPDATE SET
+          building_type = EXCLUDED.building_type,
+          building_name = EXCLUDED.building_name,
+          latitude = EXCLUDED.latitude,
+          longitude = EXCLUDED.longitude,
+          istifaa_expiry_date = EXCLUDED.istifaa_expiry_date,
+          amc_expiry_date = EXCLUDED.amc_expiry_date,
+          doe_noc_expiry_date = EXCLUDED.doe_noc_expiry_date,
+          coc_expiry_date = EXCLUDED.coc_expiry_date,
+          tpi_expiry_date = EXCLUDED.tpi_expiry_date,
+          notes = EXCLUDED.notes,
+          updated_at = now()
+        RETURNING id, sn, building_type, building_code, building_name, latitude, longitude,
+                  istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
+                  notes, created_at, updated_at;
+      `;
+      const params = [building_type, building_code, building_name, latitude, longitude,
+        istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes];
+      const r = await client.query(q, params);
+      res.status(201).json(rowWithStatuses(r.rows[0]));
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('POST /api/tank-documents failed:', err && err.message);
+    res.status(500).json({ error: 'failed to save tank document' });
+  }
+});
+
+app.put('/api/tank-documents/:id', express.json(), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+    const b = req.body || {};
+
+    // Do not allow updating SN via this endpoint
+    const fields = {
+      building_type: b.building_type,
+      building_code: b.building_code,
+      building_name: b.building_name,
+      latitude: b.latitude == null || b.latitude === '' ? null : Number(b.latitude),
+      longitude: b.longitude == null || b.longitude === '' ? null : Number(b.longitude),
+      istifaa_expiry_date: parseDateOrNull(b.istifaa_expiry_date),
+      amc_expiry_date: parseDateOrNull(b.amc_expiry_date),
+      doe_noc_expiry_date: parseDateOrNull(b.doe_noc_expiry_date),
+      coc_expiry_date: parseDateOrNull(b.coc_expiry_date),
+      tpi_expiry_date: parseDateOrNull(b.tpi_expiry_date),
+      notes: b.notes == null ? null : String(b.notes).trim()
+    };
+
+    const columns = [];
+    const params = [];
+    let idx = 1;
+    for (const [k, v] of Object.entries(fields)) {
+      if (v !== undefined) {
+        columns.push(`${k} = $${idx++}`);
+        params.push(v);
+      }
+    }
+    if (!columns.length) return res.status(400).json({ error: 'no fields to update' });
+    params.push(id);
+
+    const client = await pool.connect();
+    try {
+      const r = await client.query(
+        `UPDATE tank_documents SET ${columns.join(', ')}, updated_at = now()
+         WHERE id = $${idx} RETURNING id, sn, building_type, building_code, building_name, latitude, longitude,
+           istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes, created_at, updated_at`,
+        params
+      );
+      if (!r.rows || r.rows.length === 0) return res.status(404).json({ error: 'not found' });
+      res.json(rowWithStatuses(r.rows[0]));
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('PUT /api/tank-documents/:id failed:', err && err.message);
+    res.status(500).json({ error: 'failed to update tank document' });
+  }
+});
+
+app.delete('/api/tank-documents/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+    const client = await pool.connect();
+    try {
+      const r = await client.query(`DELETE FROM tank_documents WHERE id = $1`, [id]);
+      res.json({ ok: true, deleted: r.rowCount || 0 });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('DELETE /api/tank-documents/:id failed:', err && err.message);
+    res.status(500).json({ error: 'failed to delete tank document' });
   }
 });
 
