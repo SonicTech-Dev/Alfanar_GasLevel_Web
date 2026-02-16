@@ -54,10 +54,13 @@
     filtered: []
   };
 
+  // Robust status parsing: treat missing/invalid dates as 'unknown'
   function statusFromDate(isoDate) {
-    if (!isoDate) return 'valid';
+    if (!isoDate) return 'unknown';
+    const s = String(isoDate);
+    const d = new Date(s.includes('T') ? s : (s + 'T00:00:00Z'));
+    if (isNaN(d.getTime())) return 'unknown';
     const today = new Date();
-    const d = new Date(isoDate + 'T00:00:00Z');
     const diffDays = Math.ceil((d.getTime() - today.getTime()) / 86400000);
     if (diffDays < 0) return 'expired';
     if (diffDays <= 30) return 'renewal';
@@ -72,13 +75,24 @@
       statusFromDate(r.coc_expiry_date),
       statusFromDate(r.tpi_expiry_date),
     ];
-    return all.includes('expired') ? 'expired' : (all.includes('renewal') ? 'renewal' : 'valid');
+    if (all.includes('expired')) return 'expired';
+    if (all.includes('renewal')) return 'renewal';
+    if (all.includes('valid')) return 'valid';
+    return 'unknown';
   }
 
   function escapeHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
       .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+  }
+
+  // UI-friendly date formatter: handles raw 'YYYY-MM-DD' and full ISO strings safely
+  function fmtDate(d) {
+    if (!d) return '—';
+    const s = String(d);
+    const parsed = new Date(s.includes('T') ? s : (s + 'T00:00:00Z'));
+    return isNaN(parsed.getTime()) ? '—' : parsed.toLocaleDateString();
   }
 
   // Map
@@ -103,9 +117,15 @@
           iconSize:[32,32], iconAnchor:[16,16]
         });
         const m = L.marker([p.latitude, p.longitude], { icon }).addTo(fullMap);
+        // Popup: show location name + overall document status + per-document dates; do NOT show SN
         m.bindPopup(`<div style="min-width:240px">
-          <div style="font-weight:700">${escapeHtml(p.building_name || p.building_code || p.sn)}</div>
-          <div style="font-size:12px;color:var(--muted)">SN: ${escapeHtml(p.sn || '��')}</div>
+          <div style="font-weight:700">${escapeHtml(p.building_name || p.building_code || '')}</div>
+          <div style="font-size:12px;margin-top:6px;">
+            Status: <strong>${escapeHtml(aggregatedStatus(p).toUpperCase())}</strong>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:6px;">
+            ISTIFAA: ${fmtDate(p.istifaa_expiry_date)} · AMC: ${fmtDate(p.amc_expiry_date)} · DOE NOC: ${fmtDate(p.doe_noc_expiry_date)} · COC: ${fmtDate(p.coc_expiry_date)} · TPI: ${fmtDate(p.tpi_expiry_date)}
+          </div>
         </div>`);
         layers.push(m);
       }
@@ -131,7 +151,7 @@
         ['TPI', r.tpi_expiry_date]
       ].forEach(([name, d]) => {
         if (!d) return;
-        const dd = new Date(d + 'T00:00:00Z');
+        const dd = new Date((String(d).includes('T') ? d : (d + 'T00:00:00Z')));
         const days = Math.ceil((dd - today) / 86400000);
         if (days <= 30) {
           expired.push({
@@ -150,7 +170,7 @@
     if (listEl) {
       listEl.innerHTML = expired.length === 0
         ? '<div style="padding:30px 15px;text-align:center;color:var(--muted);font-size:12px">✅ No alerts</div>'
-        : expired.map(a => `<div class="alert-item ${a.alertClass}" onclick="openEditModalByName('${escapeHtml(a.projectName)}')"><h3>${escapeHtml(a.projectName)}</h3><p><strong>${escapeHtml(a.docName)}</strong></p><p>Expiry: ${new Date(a.expiryDate + 'T00:00:00Z').toLocaleDateString()}</p><span class="alert-badge ${a.badgeClass}">${escapeHtml(a.message)}</span></div>`).join('');
+        : expired.map(a => `<div class="alert-item ${a.alertClass}" onclick="openEditModalByName('${escapeHtml(a.projectName)}')"><h3>${escapeHtml(a.projectName)}</h3><p><strong>${escapeHtml(a.docName)}</strong></p><p>Expiry: ${fmtDate(a.expiryDate)}</p><span class="alert-badge ${a.badgeClass}">${escapeHtml(a.message)}</span></div>`).join('');
     }
     const expCount = expired.filter(e => e.priority < 0).length;
     const expiring = expired.filter(e => e.priority >= 0).length;
@@ -164,7 +184,7 @@
 
   function refreshDashboard() {
     const types = ['istifaa','amc','doe_noc','coc','tpi'];
-    const byType = Object.fromEntries(types.map(t => [t, { expired:0, renewal:0, valid:0 }]));
+    const byType = Object.fromEntries(types.map(t => [t, { expired:0, renewal:0, valid:0, unknown:0 }]));
     state.filtered.forEach(r => {
       const map = {
         istifaa: statusFromDate(r.istifaa_expiry_date),
@@ -173,7 +193,7 @@
         coc: statusFromDate(r.coc_expiry_date),
         tpi: statusFromDate(r.tpi_expiry_date),
       };
-      types.forEach(t => { byType[t][map[t]]++; });
+      types.forEach(t => { byType[t][map[t]] = (byType[t][map[t]] || 0) + 1; });
     });
     const boxes = document.getElementById('dashboardBoxes');
     if (!boxes) return;
@@ -190,7 +210,7 @@
             <div><div style="font-size:24px;font-weight:800;color:#48bb78">${s.valid}</div><div style="font-size:10px;color:var(--muted)">Valid</div></div>
           </div>
           <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04);text-align:center">
-            <span style="font-size:11px;color:var(--muted)">Total: <strong style="color:var(--text)">${s.expired+s.renewal+s.valid}</strong></span>
+            <span style="font-size:11px;color:var(--muted)">Total: <strong style="color:var(--text)">${s.expired+s.renewal+s.valid+s.unknown}</strong></span>
           </div>
         </div>
       `;
@@ -249,9 +269,10 @@
       const badge =
         sAny === 'expired' ? '<span class="status-badge status-expired">Expired</span>' :
         sAny === 'renewal' ? '<span class="status-badge status-renewal">Renewal</span>' :
-        '<span class="status-badge status-valid">Valid</span>';
+        sAny === 'valid' ? '<span class="status-badge status-valid">Valid</span>' :
+        '<span class="status-badge status-valid">Unknown</span>';
 
-      const eDate = d => d ? new Date(d + 'T00:00:00Z').toLocaleDateString() : '—';
+      const eDate = d => fmtDate(d);
 
       return `
         <tr data-id="${r.id}">
@@ -292,10 +313,10 @@
         </div>
         <div class="form-row">
           <div class="form-group"><label>Building Name</label><input type="text" id="f-building_name" value="${row?.building_name || ''}"></div>
-          <div class="form-group"><label>Latitude</label><input type="number" step="0.000001" id="f-lat" value="${row?.latitude ?? ''}"></div>
+          <div class="form-group"><label>Latitude</label><input type="number" step="any" id="f-lat" value="${row?.latitude ?? ''}"></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>Longitude</label><input type="number" step="0.000001" id="f-lng" value="${row?.longitude ?? ''}"></div>
+          <div class="form-group"><label>Longitude</label><input type="number" step="any" id="f-lng" value="${row?.longitude ?? ''}"></div>
           <div class="form-group"><label>Notes</label><input type="text" id="f-notes" value="${row?.notes || ''}"></div>
         </div>
       </div>
@@ -335,6 +356,32 @@
     fillEditInfoHeader(row || {}, isNew);
     editDocs.innerHTML = buildEditForm(row || null);
     modal.style.display = 'block';
+
+    // NEW: show/hide and wire Delete button for existing records
+    const deleteBtn = document.getElementById('editDeleteBtn');
+    if (deleteBtn) {
+      if (isNew) {
+        deleteBtn.style.display = 'none';
+        deleteBtn.onclick = null;
+      } else {
+        deleteBtn.style.display = '';
+        deleteBtn.onclick = async (e) => {
+          e.stopPropagation();
+          const id = document.getElementById('f-id')?.value || '';
+          if (!id) { alert('Record ID not found.'); return; }
+          const ok = confirm('Are you sure you want to delete this entry?');
+          if (!ok) return;
+          try {
+            await API.remove(id);
+            closeEditModal();
+            await reloadAll();
+            alert('🗑️ Deleted');
+          } catch (err) {
+            alert('Delete failed: ' + (err && err.message || 'Unknown'));
+          }
+        };
+      }
+    }
   }
 
   function closeEditModal() {

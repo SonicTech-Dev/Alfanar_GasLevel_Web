@@ -358,6 +358,12 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
 <div id="dashboard" class="screen active">
   <div class="dashboard" id="dashboardContent">
     <h2 style="margin-bottom:20px;color:var(--text);font-size:22px">📊 Document Status Overview</h2>
+
+    <!-- NEW: Add button identical in behavior to Map view (opens add/edit modal) -->
+    <div style="margin-bottom:12px;">
+      <button class="nav-btn" onclick="openEditModal()">➕ Add</button>
+    </div>
+
     <div class="dashboard-grid" id="dashboardBoxes"></div>
   </div>
   <div class="sidebar" id="dashSidebar">
@@ -453,6 +459,8 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
         <div id="editDocuments"></div>
         <button type="submit" class="btn-primary">💾 Save Changes</button>
         <button type="button" class="btn-secondary" onclick="closeEditModal()">Cancel</button>
+        <!-- NEW: Delete button, shown only when editing an existing row -->
+        <button type="button" id="editDeleteBtn" class="btn-secondary" style="display:none;background: var(--accent-2); color: #fff; border: none; margin-top:8px;">🗑️ Delete</button>
       </form>
     </div>
   </div>
