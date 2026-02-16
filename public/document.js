@@ -46,6 +46,19 @@
       const r = await fetch(`/api/tank-documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!r.ok) throw new Error('Delete failed');
       return r.json();
+    },
+    // NEW: bulk import endpoint
+    bulkImport: async (rows) => {
+      const r = await fetch('/api/tank-documents/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows })
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || 'Import failed');
+      }
+      return r.json();
     }
   };
 
@@ -79,6 +92,18 @@
     if (all.includes('renewal')) return 'renewal';
     if (all.includes('valid')) return 'valid';
     return 'unknown';
+  }
+
+  // STRICT validity: all five documents must be 'valid' (no unknowns, no renewal, no expired)
+  function allDocumentsValidStrict(r) {
+    const statuses = [
+      statusFromDate(r.istifaa_expiry_date),
+      statusFromDate(r.amc_expiry_date),
+      statusFromDate(r.doe_noc_expiry_date),
+      statusFromDate(r.coc_expiry_date),
+      statusFromDate(r.tpi_expiry_date),
+    ];
+    return statuses.every(s => s === 'valid');
   }
 
   function escapeHtml(s) {
@@ -215,7 +240,73 @@
         </div>
       `;
     });
+
+    // Render the per-document cards in the main grid
     boxes.innerHTML = html;
+
+    // --- NEW SUMMARY CARDS (own bottom row container): strict all-valid, renewal-any, expired-any ---
+    let strictValidCount = 0;
+    let renewalCount = 0;
+    let expiredCount = 0;
+    state.filtered.forEach(r => {
+      const statuses = [
+        statusFromDate(r.istifaa_expiry_date),
+        statusFromDate(r.amc_expiry_date),
+        statusFromDate(r.doe_noc_expiry_date),
+        statusFromDate(r.coc_expiry_date),
+        statusFromDate(r.tpi_expiry_date),
+      ];
+      const hasExpired = statuses.includes('expired');
+      const hasRenewal = statuses.includes('renewal');
+      const allValid = statuses.every(s => s === 'valid');
+      if (hasExpired) {
+        expiredCount++;
+      } else if (allValid) {
+        strictValidCount++;
+      } else if (hasRenewal) {
+        renewalCount++;
+      }
+      // Unknown-only sites do not contribute to these three summaries
+    });
+
+    // Ensure a separate container at the bottom of the dashboard for the summary cards
+    const dashContent = document.getElementById('dashboardContent');
+    if (dashContent) {
+      let bottomRow = document.getElementById('dashboardSummaryBottom');
+      if (!bottomRow) {
+        bottomRow = document.createElement('div');
+        bottomRow.id = 'dashboardSummaryBottom';
+        bottomRow.className = 'dashboard-grid';
+        // append as the last element in the dashboard content to keep it at the bottom
+        dashContent.appendChild(bottomRow);
+      }
+      // Build the three cards (order: left VALID, middle RENEWAL, right EXPIRED)
+      const bottomHtml = `
+        <div class="dashboard-card" style="border-top:4px solid var(--accent)">
+          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">ALL VALID</h4>
+          <div style="text-align:center">
+            <div style="font-size:28px;font-weight:800;color:#48bb78">${strictValidCount}</div>
+            <div style="font-size:10px;color:var(--muted)">Sites with all documents valid</div>
+          </div>
+        </div>
+        <div class="dashboard-card" style="border-top:4px solid var(--accent)">
+          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">RENEWAL</h4>
+          <div style="text-align:center">
+            <div style="font-size:28px;font-weight:800;color:#ed8936">${renewalCount}</div>
+            <div style="font-size:10px;color:var(--muted)">Sites requiring document renewal</div>
+          </div>
+        </div>
+        <div class="dashboard-card" style="border-top:4px solid var(--accent)">
+          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">EXPIRED</h4>
+          <div style="text-align:center">
+            <div style="font-size:28px;font-weight:800;color:#e53e3e">${expiredCount}</div>
+            <div style="font-size:10px;color:var(--muted)">Sites with expired documents</div>
+          </div>
+        </div>
+      `;
+      bottomRow.innerHTML = bottomHtml;
+    }
+
     updateAlerts('dash');
     updateAlerts('map');
     updateAlerts('list');
@@ -577,6 +668,155 @@
     reloadAll().catch(err => alert('Reload failed: ' + (err && err.message)));
   }
 
+  // NEW: Excel import helpers
+  function triggerExcelImport() {
+    const input = document.getElementById('excel-import-input');
+    if (!input) return;
+    input.value = '';
+    input.onchange = async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        await importExcelFile(file);
+      } catch (err) {
+        alert('Import failed: ' + (err && err.message || 'Unknown'));
+      }
+    };
+    input.click();
+  }
+
+  // Normalize various header spellings to our field keys
+  function normHeader(h) {
+    const s = String(h || '').toLowerCase().trim();
+    const key = s.replace(/[\s._-]+/g,' ');
+    const map = {
+      's n': 'sn',
+      'serial': 'sn',
+      'building type': 'building_type',
+      'type': 'building_type',
+      'building code': 'building_code',
+      'code': 'building_code',
+      'building name': 'building_name',
+      'name': 'building_name',
+      'istifaa exp date': 'istifaa_expiry_date',
+      'istifaa expiry date': 'istifaa_expiry_date',
+      'amc exp date': 'amc_expiry_date',
+      'amc expiry date': 'amc_expiry_date',
+      'doe noc exp date': 'doe_noc_expiry_date',
+      'doe noc expiry date': 'doe_noc_expiry_date',
+      'coc exp date': 'coc_expiry_date',
+      'coc expiry date': 'coc_expiry_date',
+      'tpi exp date': 'tpi_expiry_date',
+      'tpi expiry date': 'tpi_expiry_date',
+      'latitude': 'latitude',
+      'longitude': 'longitude',
+      'notes': 'notes'
+    };
+    return map[key] || null;
+  }
+
+  // Convert a cell value to YYYY-MM-DD (UTC) safely
+  function cellToIsoDate(v) {
+    if (v == null || v === '') return '';
+    // Excel dates: number -> use XLSX.SSF.parse_date_code
+    if (typeof v === 'number') {
+      try {
+        const d = XLSX.SSF.parse_date_code(v);
+        if (d && typeof d.y === 'number') {
+          const js = new Date(Date.UTC(d.y, (d.m || 1) - 1, d.d || 1));
+          return js.toISOString().slice(0, 10);
+        }
+      } catch (e) { /* ignore */ }
+    }
+    // JS Date
+    if (v instanceof Date) {
+      if (!isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+      return '';
+    }
+    // string -> Date
+    const s = String(v).trim();
+    if (!s) return '';
+    const tryParse = new Date(s.includes('T') ? s : (s + 'T00:00:00Z'));
+    if (!isNaN(tryParse.getTime())) return tryParse.toISOString().slice(0, 10);
+    return '';
+  }
+
+  async function importExcelFile(file) {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const sheetName = wb.SheetNames[0];
+    const sheet = wb.Sheets[sheetName];
+    // Get rows as arrays to control header mapping
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
+    if (!rows || rows.length < 2) throw new Error('No data found in the first sheet');
+
+    const headerRow = rows[0];
+    const idxMap = {}; // fieldKey -> column index
+    headerRow.forEach((h, idx) => {
+      const key = normHeader(h);
+      if (key) idxMap[key] = idx;
+    });
+
+    // Ensure minimum required keys present
+    const required = ['building_code', 'building_name'];
+    const missing = required.filter(k => !(k in idxMap));
+    if (missing.length) {
+      throw new Error('Missing required columns: ' + missing.join(', '));
+    }
+
+    const out = [];
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      // skip entirely empty rows
+      const nonEmpty = row.some(v => v != null && String(v).trim() !== '');
+      if (!nonEmpty) continue;
+
+      const building_code = row[idxMap['building_code']] != null ? String(row[idxMap['building_code']]).trim() : '';
+      const building_name = row[idxMap['building_name']] != null ? String(row[idxMap['building_name']]).trim() : '';
+
+      if (!building_code && !building_name) continue; // need something to identify
+
+      const payload = {
+        building_type: idxMap['building_type'] != null ? String(row[idxMap['building_type']] || '').trim() : '',
+        building_code,
+        building_name,
+        latitude: idxMap['latitude'] != null ? row[idxMap['latitude']] : null,
+        longitude: idxMap['longitude'] != null ? row[idxMap['longitude']] : null,
+        istifaa_expiry_date: idxMap['istifaa_expiry_date'] != null ? cellToIsoDate(row[idxMap['istifaa_expiry_date']]) : '',
+        amc_expiry_date: idxMap['amc_expiry_date'] != null ? cellToIsoDate(row[idxMap['amc_expiry_date']]) : '',
+        doe_noc_expiry_date: idxMap['doe_noc_expiry_date'] != null ? cellToIsoDate(row[idxMap['doe_noc_expiry_date']]) : '',
+        coc_expiry_date: idxMap['coc_expiry_date'] != null ? cellToIsoDate(row[idxMap['coc_expiry_date']]) : '',
+        tpi_expiry_date: idxMap['tpi_expiry_date'] != null ? cellToIsoDate(row[idxMap['tpi_expiry_date']]) : '',
+        notes: idxMap['notes'] != null ? String(row[idxMap['notes']] || '').trim() : ''
+      };
+      // numeric lat/lng if possible
+      if (payload.latitude != null && payload.latitude !== '') {
+        const n = Number(payload.latitude);
+        payload.latitude = isNaN(n) ? null : n;
+      }
+      if (payload.longitude != null && payload.longitude !== '') {
+        const n = Number(payload.longitude);
+        payload.longitude = isNaN(n) ? null : n;
+      }
+      out.push(payload);
+    }
+
+    if (!out.length) {
+      alert('No valid rows to import.');
+      return;
+    }
+
+    // POST bulk payload to server
+    const res = await API.bulkImport(out);
+    const inserted = res.inserted || 0;
+    const updated = res.updated || 0;
+    const failed = res.failed || 0;
+    alert(`✅ Import finished.\nInserted: ${inserted}\nUpdated: ${updated}\nFailed: ${failed}`);
+
+    // Reload UI
+    await reloadAll();
+  }
+
   // Expose globals used by inline HTML
   window.showScreen = showScreen;
   window.toggleSidebar = toggleSidebar;
@@ -590,6 +830,7 @@
   window.closeEditModal = closeEditModal;
   window.saveEdit = saveEdit;
   window.reloadDocumentTracker = reloadDocumentTracker;
+  window.triggerExcelImport = triggerExcelImport;
 
   // Boot
   window.addEventListener('load', () => {
@@ -599,3 +840,4 @@
     });
   });
 })();
+

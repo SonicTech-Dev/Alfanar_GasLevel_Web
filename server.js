@@ -667,7 +667,7 @@ async function maybeSendAlarms(client, reading) {
             const text = `Terminal ${tid} reported a level of ${val}%, which is above the configured maximum of ${max}%).\n\nTime: ${now.toISOString()}\n\nThis is an automated alarm.`;
             await sendAlarmEmail(email, subject, text, `<p>${text.replace(/\n/g,'<br>')}</p>`);
             // update last_max_alarm_sent_at
-            await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = now() WHERE terminal_id = $1`, [tid]).catch(()=>{});
+            await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = now() WHERE terminal_id = $1`).catch(()=>{});
           } catch (err) {
             console.warn('Failed to send max alarm', err && err.message);
           }
@@ -1593,6 +1593,136 @@ app.delete('/api/tank-documents/:id', async (req, res) => {
   } catch (err) {
     console.warn('DELETE /api/tank-documents/:id failed:', err && err.message);
     res.status(500).json({ error: 'failed to delete tank document' });
+  }
+});
+
+/* -------------------------
+   NEW: Bulk Import endpoint for Document Tracker
+   POST /api/tank-documents/import
+   Body: { rows: [ { building_type?, building_code?, building_name?, latitude?, longitude?, istifaa_expiry_date?, amc_expiry_date?, doe_noc_expiry_date?, coc_expiry_date?, tpi_expiry_date?, notes? }, ... ] }
+   Behavior:
+   - If an existing row is found (by building_code first, then by building_name), update it.
+   - Otherwise, insert a new row and auto-generate SN (numeric sequence) similar to POST /api/tank-documents.
+*/
+app.post('/api/tank-documents/import', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const rows = Array.isArray(body.rows) ? body.rows : [];
+    if (!rows.length) {
+      return res.status(400).json({ error: 'no rows to import' });
+    }
+
+    const client = await pool.connect();
+    let inserted = 0;
+    let updated = 0;
+    let failed = 0;
+
+    try {
+      await client.query('BEGIN');
+
+      for (const b of rows) {
+        try {
+          const building_type = b.building_type == null ? null : String(b.building_type).trim();
+          const building_code = b.building_code == null ? null : String(b.building_code).trim();
+          const building_name = b.building_name == null ? null : String(b.building_name).trim();
+          const latitude = b.latitude == null || b.latitude === '' ? null : Number(b.latitude);
+          const longitude = b.longitude == null || b.longitude === '' ? null : Number(b.longitude);
+          const istifaa_expiry_date = parseDateOrNull(b.istifaa_expiry_date);
+          const amc_expiry_date = parseDateOrNull(b.amc_expiry_date);
+          const doe_noc_expiry_date = parseDateOrNull(b.doe_noc_expiry_date);
+          const coc_expiry_date = parseDateOrNull(b.coc_expiry_date);
+          const tpi_expiry_date = parseDateOrNull(b.tpi_expiry_date);
+          const notes = b.notes == null ? null : String(b.notes).trim();
+
+          // Must have at least building_code or building_name to identify/update
+          if (!building_code && !building_name) {
+            failed++;
+            continue;
+          }
+
+          // Try to find existing record by building_code (preferred), else by building_name
+          let existing = null;
+          if (building_code) {
+            const r1 = await client.query(`SELECT id, sn FROM tank_documents WHERE building_code = $1 LIMIT 1`, [building_code]);
+            if (r1.rows && r1.rows.length > 0) existing = r1.rows[0];
+          }
+          if (!existing && building_name) {
+            const r2 = await client.query(`SELECT id, sn FROM tank_documents WHERE building_name = $1 LIMIT 1`, [building_name]);
+            if (r2.rows && r2.rows.length > 0) existing = r2.rows[0];
+          }
+
+          if (existing) {
+            // UPDATE existing row
+            const fields = {
+              building_type,
+              building_code,
+              building_name,
+              latitude,
+              longitude,
+              istifaa_expiry_date,
+              amc_expiry_date,
+              doe_noc_expiry_date,
+              coc_expiry_date,
+              tpi_expiry_date,
+              notes
+            };
+            const columns = [];
+            const params = [];
+            let idx = 1;
+            for (const [k, v] of Object.entries(fields)) {
+              if (v !== undefined) {
+                columns.push(`${k} = $${idx++}`);
+                params.push(v);
+              }
+            }
+            if (columns.length) {
+              params.push(existing.id);
+              await client.query(
+                `UPDATE tank_documents SET ${columns.join(', ')}, updated_at = now() WHERE id = $${idx}`,
+                params
+              );
+              updated++;
+            } else {
+              // nothing to update, but count as updated (noop)
+              updated++;
+            }
+          } else {
+            // INSERT new row with auto-generated SN
+            const qIns = `
+              INSERT INTO tank_documents
+                (sn, building_type, building_code, building_name, latitude, longitude,
+                 istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
+                 notes, created_at, updated_at)
+              VALUES (
+                (SELECT COALESCE(MAX(CAST(regexp_replace(sn, '\\D', '', 'g') AS INTEGER)), 0) + 1 FROM tank_documents),
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()
+              )
+            `;
+            const params = [
+              building_type, building_code, building_name, latitude, longitude,
+              istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes
+            ];
+            await client.query(qIns, params);
+            inserted++;
+          }
+        } catch (rowErr) {
+          console.warn('Bulk import row failed:', rowErr && rowErr.message);
+          failed++;
+        }
+      }
+
+      await client.query('COMMIT');
+      return res.json({ ok: true, inserted, updated, failed });
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      console.warn('Bulk import transaction failed:', txErr && txErr.message);
+      return res.status(500).json({ error: 'bulk import failed', detail: txErr && txErr.message });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('POST /api/tank-documents/import failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to import documents' });
   }
 });
 

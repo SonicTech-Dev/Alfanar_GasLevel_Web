@@ -423,6 +423,10 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
         <button class="export-btn csv" onclick="exportToCSV()">📋 CSV</button>
         <button class="export-btn excel" onclick="exportToExcel()">📊 Excel</button>
         <button class="export-btn pdf" onclick="exportToPDF()">📄 PDF</button>
+
+        <!-- NEW: Import Excel button + hidden file input -->
+        <button class="export-btn excel" onclick="triggerExcelImport()">⬆️ Import Excel</button>
+        <input id="excel-import-input" type="file" accept=".xlsx,.xls,.csv" style="display:none" />
       </div>
     </div>
     <div class="projects-table">
