@@ -19,6 +19,8 @@
   const sumNormalEl = document.getElementById('sum-normal');
   const sumAboveEl = document.getElementById('sum-above');
   const sumUnderEl = document.getElementById('sum-under');
+  const sumOfflineEl = document.getElementById('sum-offline');
+  const sumOnlineEl = document.getElementById('sum-online');
   const devicesCountEl = document.getElementById('map-devices-count');
 
   // Location panel refs
@@ -184,13 +186,14 @@
     const val = d._lastValueNumeric;
     const min = (d.lpg_min_level != null) ? Number(d.lpg_min_level) : null;
     const max = (d.lpg_max_level != null) ? Number(d.lpg_max_level) : null;
-    if (val == null || isNaN(val) || (min == null && max == null)) return 'unknown';
+    if (val == null || isNaN(val)) return 'unknown'; // offline handled separately where needed
     if (min != null && !isNaN(min) && val < min) return 'min';
     if (max != null && !isNaN(max) && val > max) return 'max';
+    if (min == null && max == null) return 'unknown';
     return 'normal';
   }
 
-  // Render map with markers (bigger icon; RED for alarms min/max; ACCENT for normal; GRAY for unknown)
+  // Render map with markers (bigger icon; RED for alarms min/max; ACCENT for normal; GRAY for unknown/offline)
   async function renderMap() {
     if (!mapEl) return;
     mapMsg.textContent = 'Loading map…';
@@ -217,8 +220,10 @@
       });
 
       coords.forEach(d => {
+        const isOffline = (d._lastValueNumeric == null || isNaN(d._lastValueNumeric));
         const status = thresholdStatusForDevice(d);
-        const color = (status === 'min' || status === 'max') ? COLORS.red
+        const color = isOffline ? COLORS.gray
+                    : (status === 'min' || status === 'max') ? COLORS.red
                     : (status === 'normal') ? COLORS.accent
                     : COLORS.gray;
 
@@ -337,19 +342,29 @@
     let normal = 0;
     let above = 0;
     let under = 0;
+    let offline = 0;
 
     const alertItems = [];
 
     devices.forEach(d => {
+      const val = d._lastValueNumeric;
+      const isOffline = (val == null || isNaN(val));
+      if (isOffline) {
+        offline++;
+        return; // offline devices don't contribute to alarm/normal counts
+      }
+
       const st = thresholdStatusForDevice(d);
-      if (st === 'normal') normal++;
-      else if (st === 'max') {
+      if (st === 'normal') {
+        normal++;
+      } else if (st === 'max') {
         above++;
-        alertItems.push(buildAlertItem(d, 'Above Maximum'));
+        alertItems.push(buildAlertItem(d, 'High Level Alarm'));
       } else if (st === 'min') {
         under++;
-        alertItems.push(buildAlertItem(d, 'Under Minimum'));
+        alertItems.push(buildAlertItem(d, 'Low Level Alarm'));
       }
+      // unknown with numeric value is ignored for alerts
     });
 
     // Alerts list (use text-only color classes to avoid background highlight)
@@ -364,7 +379,10 @@
     alertsCountEl.classList.add(totalAlerts > 0 ? 'status-red' : 'status-green');
 
     // Summary table counts
+    const online = Math.max(0, devices.size - offline);
     sumTotalEl.textContent = String(devices.size);
+    if (sumOnlineEl) sumOnlineEl.textContent = String(online);
+    if (sumOfflineEl) sumOfflineEl.textContent = String(offline);
     sumNormalEl.textContent = String(normal);
     sumAboveEl.textContent = String(above);
     sumUnderEl.textContent = String(under);
@@ -409,10 +427,30 @@
       const projectCode = d.project_code || '';
       const sn = d.sn || '';
       const emirate = d.emirate || '';
-      const val = (d._lastValueNumeric == null || isNaN(d._lastValueNumeric)) ? 'N/A' : `${Math.round(d._lastValueNumeric)}%`;
-      const status = thresholdStatusForDevice(d);
-      const statusClass = status === 'min' ? 'min' : status === 'max' ? 'max' : status === 'normal' ? 'normal' : 'unknown';
-      const statusText = status === 'min' ? 'Under Threshold' : status === 'max' ? 'Above Threshold' : status === 'normal' ? 'Normal' : 'Unknown';
+      const valNum = d._lastValueNumeric;
+      const isOffline = (valNum == null || isNaN(valNum));
+      const val = isOffline ? 'N/A' : `${Math.round(valNum)}%`;
+
+      const st = thresholdStatusForDevice(d);
+      let statusClass = 'unknown';
+      let statusText = 'Unknown';
+      if (isOffline) {
+        statusClass = 'muted';
+        statusText = 'Offline';
+      } else if (st === 'min') {
+        statusClass = 'min';
+        statusText = 'Low Level Alarm';
+      } else if (st === 'max') {
+        statusClass = 'max';
+        statusText = 'High Level Alarm';
+      } else if (st === 'normal') {
+        statusClass = 'normal';
+        statusText = 'Normal';
+      } else {
+        statusClass = 'muted';
+        statusText = 'Unknown';
+      }
+
       const minStr = (d.lpg_min_level == null || isNaN(d.lpg_min_level)) ? '—' : `${d.lpg_min_level}%`;
       const maxStr = (d.lpg_max_level == null || isNaN(d.lpg_max_level)) ? '—' : `${d.lpg_max_level}%`;
 
@@ -489,34 +527,48 @@
   async function refreshGasDetails() {
     if (!gasTbody) return;
     try {
-      gasTbody.innerHTML = `<tr><td colspan="6" class="muted">Loading…</td></tr>`;
+      gasTbody.innerHTML = `<tr><td colspan="5" class="muted">Loading…</td></tr>`;
       const data = await fetchConsumptionAll();
       const rows = Array.isArray(data.rows) ? data.rows : (data.terminal_id ? [data] : []);
       if (!rows.length) {
-        gasTbody.innerHTML = `<tr><td colspan="6" class="muted">No data</td></tr>`;
+        gasTbody.innerHTML = `<tr><td colspan="5" class="muted">No data</td></tr>`;
         return;
       }
       const html = rows.map(r => {
         const name = escapeHtml(deviceLabelFor(r.terminal_id));
-        const cap = (r.capacity_liters == null || isNaN(r.capacity_liters)) ? 'unknown' : String(round2(r.capacity_liters));
-        const dailyLiters = (r.daily && r.daily.liters != null && !isNaN(r.daily.liters)) ? String(round2(r.daily.liters)) : (r.daily && r.daily.percent_drop != null ? `${round2(r.daily.percent_drop)}%` : '—');
-        const avgLiters = (r.monthly && r.monthly.average_liters_per_day != null && !isNaN(r.monthly.average_liters_per_day)) ? String(round2(r.monthly.average_liters_per_day)) : (r.monthly && r.monthly.average_percent_per_day != null ? `${round2(r.monthly.average_percent_per_day)}%` : '—');
-        const total30 = (r.monthly && r.monthly.total_liters_30d != null && !isNaN(r.monthly.total_liters_30d)) ? String(round2(r.monthly.total_liters_30d)) : (r.monthly && r.monthly.total_percent_30d != null ? `${round2(r.monthly.total_percent_30d)}%` : '—');
-        const daysInc = (r.monthly && r.monthly.days_included != null) ? String(r.monthly.days_included) : '—';
+
+        // Capacity (Liters): show "Not Set" when missing
+        const capacitySet = (r.capacity_liters != null && !isNaN(r.capacity_liters));
+        const capDisplay = capacitySet ? String(round2(r.capacity_liters)) : 'Not Set';
+
+        // Avg Daily Consumption (Liters): only if capacity is set; else "—"
+        const avgDailyLiters = (r.monthly && r.monthly.average_liters_per_day != null && !isNaN(r.monthly.average_liters_per_day) && capacitySet)
+          ? String(round2(r.monthly.average_liters_per_day))
+          : '—';
+
+        // Avg Daily Consumption (%): monthly.average_percent_per_day; show "—" if unavailable
+        const avgDailyPercent = (r.monthly && r.monthly.average_percent_per_day != null && !isNaN(r.monthly.average_percent_per_day))
+          ? `${String(round2(r.monthly.average_percent_per_day))}%`
+          : '—';
+
+        // Avg Monthly Consumption (Liters): use 30-day total liters; only if capacity set; else "—"
+        const avgMonthlyLiters = (r.monthly && r.monthly.total_liters_30d != null && !isNaN(r.monthly.total_liters_30d) && capacitySet)
+          ? String(round2(r.monthly.total_liters_30d))
+          : '—';
+
         return `
           <tr>
             <td class="muted">${name}</td>
-            <td class="muted">${cap}</td>
-            <td>${dailyLiters}</td>
-            <td>${avgLiters}</td>
-            <td>${total30}</td>
-            <td class="muted">${daysInc}</td>
+            <td class="muted">${capDisplay}</td>
+            <td>${avgDailyLiters}</td>
+            <td>${avgDailyPercent}</td>
+            <td>${avgMonthlyLiters}</td>
           </tr>
         `;
       }).join('');
       gasTbody.innerHTML = html;
     } catch (err) {
-      gasTbody.innerHTML = `<tr><td colspan="6" class="muted">Failed to load gas details: ${escapeHtml(err && err.message || 'Unknown')}</td></tr>`;
+      gasTbody.innerHTML = `<tr><td colspan="5" class="muted">Failed to load gas details: ${escapeHtml(err && err.message || 'Unknown')}</td></tr>`;
     }
   }
 

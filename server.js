@@ -696,7 +696,7 @@ async function maybeSendAlarms(client, reading) {
         await client.query(`UPDATE tank_info SET last_min_alarm_sent_at = NULL WHERE terminal_id = $1`, [tid]).catch(()=>{});
       }
       if (clearMax) {
-        await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = NULL WHERE terminal_id = $1`, [tid]).catch(()=>{});
+        await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = NULL WHERE terminal_id = $1`).catch(()=>{});
       }
     } catch (err) {
       // non-fatal
@@ -1965,6 +1965,12 @@ function computeDailySeries(rows) {
   return result;
 }
 
+// Helper: round to 2 decimals
+function round2(n) {
+  if (n == null || isNaN(n)) return null;
+  return Math.round(Number(n) * 100) / 100;
+}
+
 app.get('/api/consumption', async (req, res) => {
   try {
     const terminalIdParam = req.query.terminalId ? String(req.query.terminalId).trim() : null;
@@ -2045,8 +2051,8 @@ app.get('/api/consumption', async (req, res) => {
           const liters = (capacityLiters != null && !isNaN(capacityLiters)) ? (capacityLiters * (dailyEntry.percentDrop / 100.0)) : null;
           dailyOut = {
             date: dailyEntry.day,
-            percent_drop: dailyEntry.percentDrop,
-            liters: liters,
+            percent_drop: round2(dailyEntry.percentDrop),
+            liters: round2(liters),
             readings: dailyEntry.readings
           };
         }
@@ -2070,10 +2076,10 @@ app.get('/api/consumption', async (req, res) => {
           capacity_liters: capacityLiters,
           daily: dailyOut,
           monthly: {
-            average_liters_per_day: avgLitersPerDay,
-            average_percent_per_day: avgPercentPerDay,
-            total_liters_30d: totalLiters30d,
-            total_percent_30d: totalPercent30d,
+            average_liters_per_day: round2(avgLitersPerDay),
+            average_percent_per_day: round2(avgPercentPerDay),
+            total_liters_30d: round2(totalLiters30d),
+            total_percent_30d: round2(totalPercent30d),
             days_included: daysIncluded.length,
             days_total: dailySeries.length
           }

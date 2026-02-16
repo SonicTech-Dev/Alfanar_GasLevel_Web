@@ -333,9 +333,11 @@
           </thead>
           <tbody id="summary-tbody">
             <tr><td class="label-cell">Total devices</td><td class="value-cell value-muted" id="sum-total">0</td></tr>
+            <tr><td class="label-cell">Online</td><td class="value-cell value-green" id="sum-online">0</td></tr>
+            <tr><td class="label-cell">Offline</td><td class="value-cell value-red" id="sum-offline">0</td></tr>
             <tr><td class="label-cell">Normal state</td><td class="value-cell value-green" id="sum-normal">0</td></tr>
-            <tr><td class="label-cell">Above Threshold</td><td class="value-cell value-red" id="sum-above">0</td></tr>
-            <tr><td class="label-cell">Under Threshold</td><td class="value-cell value-red" id="sum-under">0</td></tr>
+            <tr><td class="label-cell">High Level Alarm</td><td class="value-cell value-red" id="sum-above">0</td></tr>
+            <tr><td class="label-cell">Low Level Alarm</td><td class="value-cell value-red" id="sum-under">0</td></tr>
           </tbody>
         </table>
       </section>
@@ -414,18 +416,16 @@
         <thead>
           <tr>
             <th>Device</th>
-            <th>Capacity (L)</th>
-            <th>Daily (L)</th>
-            <th>Avg Monthly (L/day)</th>
-            <th>30-day Total (L)</th>
-            <th>Days Included</th>
+            <th>Capacity (Liters)</th>
+            <th>Avg Daily Consumption (Liters)</th>
+            <th>Avg Daily Consumption (%)</th>
+            <th>Avg Monthly Consumption (Liters)</th>
           </tr>
         </thead>
         <tbody id="gas-details-tbody">
-          <tr><td colspan="6" class="muted">Loading…</td></tr>
+          <tr><td colspan="5" class="muted">Loading…</td></tr>
         </tbody>
       </table>
-      <div class="gas-note" id="gas-note">Daily consumption sums only negative level changes per calendar day. Increases (refills) are ignored; small negative changes are counted.</div>
     </section>
   </main>
 
@@ -434,6 +434,6 @@
   </footer>
 
   <!-- Dashboard logic -->
-  <script src="dashboard.js"></script>
+  <script src="dashboard.js?v=2"></script>
 </body>
 </html>
