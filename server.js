@@ -667,7 +667,7 @@ async function maybeSendAlarms(client, reading) {
             const text = `Terminal ${tid} reported a level of ${val}%, which is above the configured maximum of ${max}%).\n\nTime: ${now.toISOString()}\n\nThis is an automated alarm.`;
             await sendAlarmEmail(email, subject, text, `<p>${text.replace(/\n/g,'<br>')}</p>`);
             // update last_max_alarm_sent_at
-            await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = now() WHERE terminal_id = $1`).catch(()=>{});
+            await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = now() WHERE terminal_id = $1`, [tid]).catch(()=>{});
           } catch (err) {
             console.warn('Failed to send max alarm', err && err.message);
           }
@@ -696,7 +696,7 @@ async function maybeSendAlarms(client, reading) {
         await client.query(`UPDATE tank_info SET last_min_alarm_sent_at = NULL WHERE terminal_id = $1`, [tid]).catch(()=>{});
       }
       if (clearMax) {
-        await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = NULL WHERE terminal_id = $1`).catch(()=>{});
+        await client.query(`UPDATE tank_info SET last_max_alarm_sent_at = NULL`).catch(()=>{});
       }
     } catch (err) {
       // non-fatal
@@ -1194,7 +1194,7 @@ app.post('/api/tank-info', express.json(), async (req, res) => {
           alarm_email = EXCLUDED.alarm_email,
           project_code = EXCLUDED.project_code,
           emirate = EXCLUDED.emirate
-        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_tank_installation, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate, created_at;
+        RETURNING terminal_id, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate, created_at;
       `;
       const params = [terminalId, building_name, address, afg_bld_code, client_bld_code, lpg_tank_capacity, lpg_tank_details, lpg_tank_type, lpg_installation_type, notes, lpg_min_level, lpg_max_level, alarm_email, project_code, emirate];
       const r = await client.query(q, params);
@@ -1376,6 +1376,17 @@ function parseDateOrNull(s) {
   if (isNaN(d.getTime())) return null;
   return d.toISOString().slice(0, 10);
 }
+
+// NEW: ensure we emit date-only strings (YYYY-MM-DD) in responses
+function dateOnly(val) {
+  if (val == null) return null;
+  if (val instanceof Date) return val.toISOString().slice(0, 10);
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s.includes('T') ? s : (s + 'T00:00:00Z'));
+  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
 function computeStatusForDate(isoDate) {
   if (!isoDate) return 'unknown';
   const today = new Date();
@@ -1386,6 +1397,12 @@ function computeStatusForDate(isoDate) {
   return 'valid';
 }
 function rowWithStatuses(r) {
+  const ist = dateOnly(r.istifaa_expiry_date);
+  const amc = dateOnly(r.amc_expiry_date);
+  const doe = dateOnly(r.doe_noc_expiry_date);
+  const coc = dateOnly(r.coc_expiry_date);
+  const tpi = dateOnly(r.tpi_expiry_date);
+
   return {
     id: r.id,
     sn: r.sn,
@@ -1394,20 +1411,20 @@ function rowWithStatuses(r) {
     building_name: r.building_name,
     latitude: r.latitude === null || r.latitude === undefined ? null : Number(r.latitude),
     longitude: r.longitude === null || r.longitude === undefined ? null : Number(r.longitude),
-    istifaa_expiry_date: r.istifaa_expiry_date,
-    amc_expiry_date: r.amc_expiry_date,
-    doe_noc_expiry_date: r.doe_noc_expiry_date,
-    coc_expiry_date: r.coc_expiry_date,
-    tpi_expiry_date: r.tpi_expiry_date,
+    istifaa_expiry_date: ist,
+    amc_expiry_date: amc,
+    doe_noc_expiry_date: doe,
+    coc_expiry_date: coc,
+    tpi_expiry_date: tpi,
     notes: r.notes || null,
     created_at: normalizeDbTimestampToIso(r.created_at),
     updated_at: normalizeDbTimestampToIso(r.updated_at),
     statuses: {
-      istifaa: computeStatusForDate(r.istifaa_expiry_date),
-      amc: computeStatusForDate(r.amc_expiry_date),
-      doe_noc: computeStatusForDate(r.doe_noc_expiry_date),
-      coc: computeStatusForDate(r.coc_expiry_date),
-      tpi: computeStatusForDate(r.tpi_expiry_date),
+      istifaa: computeStatusForDate(ist),
+      amc: computeStatusForDate(amc),
+      doe_noc: computeStatusForDate(doe),
+      coc: computeStatusForDate(coc),
+      tpi: computeStatusForDate(tpi),
     }
   };
 }

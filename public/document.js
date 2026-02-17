@@ -86,6 +86,15 @@
     return 'valid';
   }
 
+  // Helper: coerce any value to YYYY-MM-DD for date inputs
+  function toUiDate(v) {
+    if (v == null || v === '') return '';
+    const s = String(v).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; // already date-only
+    const d = new Date(s.includes('T') ? s : (s + 'T00:00:00Z'));
+    return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+  }
+
   // Aggregated site status:
   // - If ANY document is expired OR unknown -> site is expired
   // - Else if ANY document is renewal -> site is renewal
@@ -468,15 +477,15 @@
       <div class="doc-section">
         <h4>Expiry Dates</h4>
         <div class="form-row">
-          <div class="form-group"><label>ISTIFAA Exp Date</label><input type="date" id="f-istifaa" value="${row?.istifaa_expiry_date || ''}"></div>
-          <div class="form-group"><label>AMC Exp Date</label><input type="date" id="f-amc" value="${row?.amc_expiry_date || ''}"></div>
+          <div class="form-group"><label>ISTIFAA Exp Date</label><input type="date" id="f-istifaa" value="${toUiDate(row?.istifaa_expiry_date)}"></div>
+          <div class="form-group"><label>AMC Exp Date</label><input type="date" id="f-amc" value="${toUiDate(row?.amc_expiry_date)}"></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>DOE NOC Exp Date</label><input type="date" id="f-doe" value="${row?.doe_noc_expiry_date || ''}"></div>
-          <div class="form-group"><label>COC Exp Date</label><input type="date" id="f-coc" value="${row?.coc_expiry_date || ''}"></div>
+          <div class="form-group"><label>DOE NOC Exp Date</label><input type="date" id="f-doe" value="${toUiDate(row?.doe_noc_expiry_date)}"></div>
+          <div class="form-group"><label>COC Exp Date</label><input type="date" id="f-coc" value="${toUiDate(row?.coc_expiry_date)}"></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>TPI Exp Date</label><input type="date" id="f-tpi" value="${row?.tpi_expiry_date || ''}"></div>
+          <div class="form-group"><label>TPI Exp Date</label><input type="date" id="f-tpi" value="${toUiDate(row?.tpi_expiry_date)}"></div>
         </div>
       </div>
     `;
@@ -721,7 +730,15 @@
   // Reload all from API
   async function reloadAll() {
     const json = await API.list();
-    state.rows = json.rows || [];
+    // Normalize dates to YYYY-MM-DD so the entire UI is consistent and inputs prefill correctly
+    state.rows = (json.rows || []).map(r => ({
+      ...r,
+      istifaa_expiry_date: toUiDate(r.istifaa_expiry_date),
+      amc_expiry_date: toUiDate(r.amc_expiry_date),
+      doe_noc_expiry_date: toUiDate(r.doe_noc_expiry_date),
+      coc_expiry_date: toUiDate(r.coc_expiry_date),
+      tpi_expiry_date: toUiDate(r.tpi_expiry_date),
+    }));
     applyFiltersInternal();
     refreshDashboard();
     refreshMap();
