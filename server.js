@@ -51,7 +51,7 @@ testDb().catch(e => console.warn('DB test error', e && e.message));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // parse JSON bodies (used by several endpoints including login-attempt)
-app.use(express.json());
+app.use(express.json({ limit: '250kb' }));
 
 /* Serve Document.html when visiting /Document-Tracker */
 app.get('/Document-Tracker', (req, res) => {
@@ -1600,9 +1600,10 @@ app.delete('/api/tank-documents/:id', async (req, res) => {
    NEW: Bulk Import endpoint for Document Tracker
    POST /api/tank-documents/import
    Body: { rows: [ { building_type?, building_code?, building_name?, latitude?, longitude?, istifaa_expiry_date?, amc_expiry_date?, doe_noc_expiry_date?, coc_expiry_date?, tpi_expiry_date?, notes? }, ... ] }
-   Behavior:
-   - If an existing row is found (by building_code first, then by building_name), update it.
-   - Otherwise, insert a new row and auto-generate SN (numeric sequence) similar to POST /api/tank-documents.
+   Behavior (insert-only):
+   - Always attempt to INSERT a new row and auto-generate SN.
+   - Does not update existing rows.
+   - If an insert conflicts on (sn, building_code), it will be ignored and counted as failed.
 */
 app.post('/api/tank-documents/import', async (req, res) => {
   try {
@@ -1614,7 +1615,7 @@ app.post('/api/tank-documents/import', async (req, res) => {
 
     const client = await pool.connect();
     let inserted = 0;
-    let updated = 0;
+    let updated = 0; // insert-only: always 0
     let failed = 0;
 
     try {
@@ -1634,76 +1635,48 @@ app.post('/api/tank-documents/import', async (req, res) => {
           const tpi_expiry_date = parseDateOrNull(b.tpi_expiry_date);
           const notes = b.notes == null ? null : String(b.notes).trim();
 
-          // Must have at least building_code or building_name to identify/update
+          // Minimal identity requirement: insert only if at least one identifier is present
           if (!building_code && !building_name) {
             failed++;
             continue;
           }
 
-          // Try to find existing record by building_code (preferred), else by building_name
-          let existing = null;
-          if (building_code) {
-            const r1 = await client.query(`SELECT id, sn FROM tank_documents WHERE building_code = $1 LIMIT 1`, [building_code]);
-            if (r1.rows && r1.rows.length > 0) existing = r1.rows[0];
-          }
-          if (!existing && building_name) {
-            const r2 = await client.query(`SELECT id, sn FROM tank_documents WHERE building_name = $1 LIMIT 1`, [building_name]);
-            if (r2.rows && r2.rows.length > 0) existing = r2.rows[0];
-          }
+// INSERT or UPDATE on conflict (sn, building_code)
+const qIns = `
+  INSERT INTO tank_documents
+    (sn, building_type, building_code, building_name, latitude, longitude,
+     istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
+     notes, created_at, updated_at)
+  VALUES (
+    (SELECT COALESCE(MAX(CAST(regexp_replace(sn, '\\D', '', 'g') AS INTEGER)), 0) + 1 FROM tank_documents),
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()
+  )
+  ON CONFLICT ON CONSTRAINT uniq_sn_building DO UPDATE SET
+    building_type = EXCLUDED.building_type,
+    building_code = EXCLUDED.building_code,
+    building_name = EXCLUDED.building_name,
+    latitude = EXCLUDED.latitude,
+    longitude = EXCLUDED.longitude,
+    istifaa_expiry_date = EXCLUDED.istifaa_expiry_date,
+    amc_expiry_date = EXCLUDED.amc_expiry_date,
+    doe_noc_expiry_date = EXCLUDED.doe_noc_expiry_date,
+    coc_expiry_date = EXCLUDED.coc_expiry_date,
+    tpi_expiry_date = EXCLUDED.tpi_expiry_date,
+    notes = EXCLUDED.notes,
+    updated_at = now()
+  RETURNING id
+`;
+const params = [
+  building_type, building_code, building_name, latitude, longitude,
+  istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes
+];
+const r = await client.query(qIns, params);
 
-          if (existing) {
-            // UPDATE existing row
-            const fields = {
-              building_type,
-              building_code,
-              building_name,
-              latitude,
-              longitude,
-              istifaa_expiry_date,
-              amc_expiry_date,
-              doe_noc_expiry_date,
-              coc_expiry_date,
-              tpi_expiry_date,
-              notes
-            };
-            const columns = [];
-            const params = [];
-            let idx = 1;
-            for (const [k, v] of Object.entries(fields)) {
-              if (v !== undefined) {
-                columns.push(`${k} = $${idx++}`);
-                params.push(v);
-              }
-            }
-            if (columns.length) {
-              params.push(existing.id);
-              await client.query(
-                `UPDATE tank_documents SET ${columns.join(', ')}, updated_at = now() WHERE id = $${idx}`,
-                params
-              );
-              updated++;
-            } else {
-              // nothing to update, but count as updated (noop)
-              updated++;
-            }
-          } else {
-            // INSERT new row with auto-generated SN
-            const qIns = `
-              INSERT INTO tank_documents
-                (sn, building_type, building_code, building_name, latitude, longitude,
-                 istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
-                 notes, created_at, updated_at)
-              VALUES (
-                (SELECT COALESCE(MAX(CAST(regexp_replace(sn, '\\D', '', 'g') AS INTEGER)), 0) + 1 FROM tank_documents),
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()
-              )
-            `;
-            const params = [
-              building_type, building_code, building_name, latitude, longitude,
-              istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes
-            ];
-            await client.query(qIns, params);
+          if (r.rowCount && r.rows && r.rows[0] && r.rows[0].id) {
             inserted++;
+          } else {
+            // Ignored due to conflict or unexpected condition
+            failed++;
           }
         } catch (rowErr) {
           console.warn('Bulk import row failed:', rowErr && rowErr.message);

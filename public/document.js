@@ -4,6 +4,12 @@
 //
 // CHANGE: SN is now auto-generated server-side for new sites. The edit modal no longer includes an SN input,
 // and saveEdit does not send an SN in the payload.
+//
+// NEW: Treat "unknown" (missing/invalid date) as "expired" across the UI.
+// - Dashboard per-document tiles: Expired = Total − Valid − Renewal (unknown absorbed into expired).
+// - Map/List aggregated status: if any document is unknown, the site is considered expired.
+// - Alerts: unknown (no date) entries are listed as expired with a clear message.
+// NEW: List view Exp/Ren/Val columns show per-site counts (unknown counted as expired). Also included in CSV/Excel/PDF exports.
 
 (function(){
   const API = {
@@ -80,6 +86,11 @@
     return 'valid';
   }
 
+  // Aggregated site status:
+  // - If ANY document is expired OR unknown -> site is expired
+  // - Else if ANY document is renewal -> site is renewal
+  // - Else if ANY document is valid -> site is valid
+  // - Else unknown
   function aggregatedStatus(r) {
     const all = [
       statusFromDate(r.istifaa_expiry_date),
@@ -88,9 +99,14 @@
       statusFromDate(r.coc_expiry_date),
       statusFromDate(r.tpi_expiry_date),
     ];
-    if (all.includes('expired')) return 'expired';
-    if (all.includes('renewal')) return 'renewal';
-    if (all.includes('valid')) return 'valid';
+    const hasExpired = all.includes('expired');
+    const hasUnknown = all.includes('unknown');
+    const hasRenewal = all.includes('renewal');
+    const hasValid = all.includes('valid');
+
+    if (hasExpired || hasUnknown) return 'expired';
+    if (hasRenewal) return 'renewal';
+    if (hasValid) return 'valid';
     return 'unknown';
   }
 
@@ -118,6 +134,24 @@
     const s = String(d);
     const parsed = new Date(s.includes('T') ? s : (s + 'T00:00:00Z'));
     return isNaN(parsed.getTime()) ? '—' : parsed.toLocaleDateString();
+  }
+
+  // Helper: count per-site document statuses (unknown treated as expired)
+  function docStateCounts(row) {
+    const statuses = [
+      statusFromDate(row.istifaa_expiry_date),
+      statusFromDate(row.amc_expiry_date),
+      statusFromDate(row.doe_noc_expiry_date),
+      statusFromDate(row.coc_expiry_date),
+      statusFromDate(row.tpi_expiry_date),
+    ];
+    let expired = 0, renewal = 0, valid = 0;
+    statuses.forEach(s => {
+      if (s === 'expired' || s === 'unknown') expired++;
+      else if (s === 'renewal') renewal++;
+      else if (s === 'valid') valid++;
+    });
+    return { expired, renewal, valid };
   }
 
   // Map
@@ -168,25 +202,40 @@
     const expired = [];
     const today = new Date();
     state.filtered.forEach(r => {
-      [
+      const entries = [
         ['Istifaa', r.istifaa_expiry_date],
         ['AMC', r.amc_expiry_date],
         ['DOE NOC', r.doe_noc_expiry_date],
         ['COC', r.coc_expiry_date],
         ['TPI', r.tpi_expiry_date]
-      ].forEach(([name, d]) => {
-        if (!d) return;
-        const dd = new Date((String(d).includes('T') ? d : (d + 'T00:00:00Z')));
-        const days = Math.ceil((dd - today) / 86400000);
-        if (days <= 30) {
+      ];
+      entries.forEach(([name, d]) => {
+        const hasDate = !!d && !isNaN(new Date((String(d).includes('T') ? d : (d + 'T00:00:00Z'))).getTime());
+        if (hasDate) {
+          const dd = new Date((String(d).includes('T') ? d : (d + 'T00:00:00Z')));
+          const days = Math.ceil((dd - today) / 86400000);
+          if (days <= 30) {
+            expired.push({
+              projectName: r.building_name || r.building_code || r.sn,
+              docName: name,
+              expiryDate: d,
+              message: (days < 0) ? `Expired ${Math.abs(days)} days ago` : `Expires in ${days} days`,
+              alertClass: (days <= 7) ? 'critical' : 'warning',
+              badgeClass: (days <= 7) ? 'badge-expired' : 'badge-warning',
+              priority: days
+            });
+          }
+        } else {
+          // NEW: No date -> treat as expired for alerts
           expired.push({
             projectName: r.building_name || r.building_code || r.sn,
             docName: name,
-            expiryDate: d,
-            message: (days < 0) ? `Expired ${Math.abs(days)} days ago` : `Expires in ${days} days`,
-            alertClass: (days <= 7) ? 'critical' : 'warning',
-            badgeClass: (days <= 7) ? 'badge-expired' : 'badge-warning',
-            priority: days
+            expiryDate: null,
+            message: 'Expired (no date provided)',
+            alertClass: 'critical',
+            badgeClass: 'badge-expired',
+            // Use a negative priority to sort with expired items; slightly earlier than just-expired
+            priority: -1
           });
         }
       });
@@ -226,16 +275,19 @@
     let html = '';
     types.forEach(t => {
       const s = byType[t];
+      const total = (s.expired + s.renewal + s.valid + s.unknown);
+      // NEW: Show expired as remainder to guarantee consistency
+      const expiredDisplay = Math.max(0, total - s.valid - s.renewal);
       html += `
         <div class="dashboard-card" style="border-top:4px solid var(--accent)">
           <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">${title[t]}</h4>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
-            <div><div style="font-size:24px;font-weight:800;color:#e53e3e">${s.expired}</div><div style="font-size:10px;color:var(--muted)">Expired</div></div>
+            <div><div style="font-size:24px;font-weight:800;color:#e53e3e">${expiredDisplay}</div><div style="font-size:10px;color:var(--muted)">Expired</div></div>
             <div><div style="font-size:24px;font-weight:800;color:#ed8936">${s.renewal}</div><div style="font-size:10px;color:var(--muted)">Renewal</div></div>
             <div><div style="font-size:24px;font-weight:800;color:#48bb78">${s.valid}</div><div style="font-size:10px;color:var(--muted)">Valid</div></div>
           </div>
           <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04);text-align:center">
-            <span style="font-size:11px;color:var(--muted)">Total: <strong style="color:var(--text)">${s.expired+s.renewal+s.valid+s.unknown}</strong></span>
+            <span style="font-size:11px;color:var(--muted)">Total: <strong style="color:var(--text)">${total}</strong></span>
           </div>
         </div>
       `;
@@ -257,16 +309,17 @@
         statusFromDate(r.tpi_expiry_date),
       ];
       const hasExpired = statuses.includes('expired');
+      const hasUnknown = statuses.includes('unknown');
       const hasRenewal = statuses.includes('renewal');
       const allValid = statuses.every(s => s === 'valid');
-      if (hasExpired) {
+      if (hasExpired || hasUnknown) {
         expiredCount++;
       } else if (allValid) {
         strictValidCount++;
       } else if (hasRenewal) {
         renewalCount++;
       }
-      // Unknown-only sites do not contribute to these three summaries
+      // Unknown-only sites are now counted as expired
     });
 
     // Ensure a separate container at the bottom of the dashboard for the summary cards
@@ -363,7 +416,7 @@
         sAny === 'valid' ? '<span class="status-badge status-valid">Valid</span>' :
         '<span class="status-badge status-valid">Unknown</span>';
 
-      const eDate = d => fmtDate(d);
+      const counts = docStateCounts(r);
 
       return `
         <tr data-id="${r.id}">
@@ -371,9 +424,9 @@
           <td>${escapeHtml(r.building_name || '')}</td>
           <td>${escapeHtml(r.building_code || '')}</td>
           <td>${badge}</td>
-          <td>${escapeHtml(eDate(r.istifaa_expiry_date))}</td>
-          <td>${escapeHtml(eDate(r.amc_expiry_date))}</td>
-          <td>${escapeHtml(eDate(r.doe_noc_expiry_date))}</td>
+          <td>${counts.expired}</td>
+          <td>${counts.renewal}</td>
+          <td>${counts.valid}</td>
           <td><button class="edit-btn" data-action="edit">✏️ Edit</button></td>
         </tr>
       `;
@@ -517,9 +570,10 @@
 
   // Export helpers (use current filtered rows)
   function exportToCSV() {
-    let csv='SN,Building Name,Building Code,ISTIFAA Exp,AMC Exp,DOE NOC Exp,COC Exp,TPI Exp,Status\n';
+    let csv='SN,Building Name,Building Code,ISTIFAA Exp,AMC Exp,DOE NOC Exp,COC Exp,TPI Exp,Exp Count,Ren Count,Val Count,Status\n';
     state.filtered.forEach(r=>{
       const s = aggregatedStatus(r);
+      const counts = docStateCounts(r);
       csv+=[
         r.sn || '',
         (r.building_name || '').replace(/"/g,'""'),
@@ -529,6 +583,9 @@
         r.doe_noc_expiry_date || '',
         r.coc_expiry_date || '',
         r.tpi_expiry_date || '',
+        counts.expired,
+        counts.renewal,
+        counts.valid,
         s
       ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(',') + '\n';
     });
@@ -542,17 +599,23 @@
   }
 
   function exportToExcel() {
-    const data = state.filtered.map(r => ({
-      'SN': r.sn || '',
-      'Building Name': r.building_name || '',
-      'Building Code': r.building_code || '',
-      'ISTIFAA Exp': r.istifaa_expiry_date || '',
-      'AMC Exp': r.amc_expiry_date || '',
-      'DOE NOC Exp': r.doe_noc_expiry_date || '',
-      'COC Exp': r.coc_expiry_date || '',
-      'TPI Exp': r.tpi_expiry_date || '',
-      'Status': aggregatedStatus(r)
-    }));
+    const data = state.filtered.map(r => {
+      const counts = docStateCounts(r);
+      return {
+        'SN': r.sn || '',
+        'Building Name': r.building_name || '',
+        'Building Code': r.building_code || '',
+        'ISTIFAA Exp': r.istifaa_expiry_date || '',
+        'AMC Exp': r.amc_expiry_date || '',
+        'DOE NOC Exp': r.doe_noc_expiry_date || '',
+        'COC Exp': r.coc_expiry_date || '',
+        'TPI Exp': r.tpi_expiry_date || '',
+        'Exp Count': counts.expired,
+        'Ren Count': counts.renewal,
+        'Val Count': counts.valid,
+        'Status': aggregatedStatus(r)
+      };
+    });
     const ws=XLSX.utils.json_to_sheet(data);
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws,'Tank Documents');
@@ -567,20 +630,26 @@
     doc.text('Project Document Tracker',14,20);
     doc.setFontSize(10);
     doc.text('Generated: '+new Date().toLocaleDateString(),14,28);
-    const data=state.filtered.map(r=>[
-      r.sn || '',
-      (r.building_name || '').substring(0,20),
-      r.building_code || '',
-      r.istifaa_expiry_date || '',
-      r.amc_expiry_date || '',
-      r.doe_noc_expiry_date || '',
-      r.coc_expiry_date || '',
-      r.tpi_expiry_date || '',
-      aggregatedStatus(r)
-    ]);
+    const data=state.filtered.map(r=>{
+      const counts = docStateCounts(r);
+      return [
+        r.sn || '',
+        (r.building_name || '').substring(0,20),
+        r.building_code || '',
+        r.istifaa_expiry_date || '',
+        r.amc_expiry_date || '',
+        r.doe_noc_expiry_date || '',
+        r.coc_expiry_date || '',
+        r.tpi_expiry_date || '',
+        counts.expired,
+        counts.renewal,
+        counts.valid,
+        aggregatedStatus(r)
+      ];
+    });
     doc.autoTable({
       startY:35,
-      head:[['SN','Name','Code','ISTIFAA','AMC','DOE NOC','COC','TPI','Status']],
+      head:[['SN','Name','Code','ISTIFAA','AMC','DOE NOC','COC','TPI','Exp','Ren','Val','Status']],
       body:data,
       theme:'striped',
       headStyles:{fillColor:[102,126,234]},
@@ -840,4 +909,3 @@
     });
   });
 })();
-
