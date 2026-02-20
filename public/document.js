@@ -206,11 +206,14 @@
   }
 
   // Alerts/Dashboard
-  function updateAlerts(prefix) {
+  function updateAlerts(prefix, rowsOverride) {
+    const rowsSrc = Array.isArray(rowsOverride) ? rowsOverride : state.filtered;
+
     const listEl = document.getElementById(prefix+'AlertsList');
     const expired = [];
     const today = new Date();
-    state.filtered.forEach(r => {
+
+    rowsSrc.forEach(r => {
       const entries = [
         ['Istifaa', r.istifaa_expiry_date],
         ['AMC', r.amc_expiry_date],
@@ -235,7 +238,7 @@
             });
           }
         } else {
-          // NEW: No date -> treat as expired for alerts
+          // No date -> treat as expired for alerts
           expired.push({
             projectName: r.building_name || r.building_code || r.sn,
             docName: name,
@@ -243,7 +246,6 @@
             message: 'Expired (no date provided)',
             alertClass: 'critical',
             badgeClass: 'badge-expired',
-            // Use a negative priority to sort with expired items; slightly earlier than just-expired
             priority: -1
           });
         }
@@ -262,13 +264,15 @@
     const totalSpanTotal = document.getElementById(prefix+'-stat-total');
     if (totalSpanExpired) totalSpanExpired.textContent = expCount;
     if (totalSpanExpiring) totalSpanExpiring.textContent = expiring;
-    if (totalSpanTotal) totalSpanTotal.textContent = state.filtered.length;
+    if (totalSpanTotal) totalSpanTotal.textContent = rowsSrc.length;
   }
 
   function refreshDashboard() {
+    const sourceRows = state.rows; // always use full dataset for dashboard
+
     const types = ['istifaa','amc','doe_noc','coc','tpi'];
     const byType = Object.fromEntries(types.map(t => [t, { expired:0, renewal:0, valid:0, unknown:0 }]));
-    state.filtered.forEach(r => {
+    sourceRows.forEach(r => {
       const map = {
         istifaa: statusFromDate(r.istifaa_expiry_date),
         amc: statusFromDate(r.amc_expiry_date),
@@ -309,7 +313,7 @@
     let strictValidCount = 0;
     let renewalCount = 0;
     let expiredCount = 0;
-    state.filtered.forEach(r => {
+    sourceRows.forEach(r => {
       const statuses = [
         statusFromDate(r.istifaa_expiry_date),
         statusFromDate(r.amc_expiry_date),
@@ -369,9 +373,10 @@
       bottomRow.innerHTML = bottomHtml;
     }
 
-    updateAlerts('dash');
-    updateAlerts('map');
-    updateAlerts('list');
+    // Alerts: dashboard uses full dataset; map/list keep using current filtered set
+    updateAlerts('dash', sourceRows);
+    updateAlerts('map');  // filtered
+    updateAlerts('list'); // filtered
   }
 
   // List rendering with filters

@@ -3677,12 +3677,14 @@ function updateListRow(device) {
   const fillWidth = (numeric == null || isNaN(numeric)) ? 0 : Math.max(0, Math.min(100, Math.round(numeric)));
 
   // update level bar
+
   const bar = row.querySelector('.list-level-bar');
   const fill = row.querySelector('.list-level-fill');
   const label = row.querySelector('.list-level-label');
 
   if (bar) {
-    bar.classList.remove('status-green','status-orange','status-red');
+    // FIX: also remove 'muted' so it never collides with a real status class
+    bar.classList.remove('status-green', 'status-orange', 'status-red', 'muted');
     bar.classList.add(statusClass);
   }
   if (fill) fill.style.width = `${fillWidth}%`;
