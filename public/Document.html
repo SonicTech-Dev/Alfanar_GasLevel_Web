@@ -302,6 +302,23 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
   border:1px solid rgba(255,255,255,0.04);
 }
 
+/* NEW: summary sites/documents modal table */
+.summary-sites-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.summary-sites-table th,
+.summary-sites-table td {
+  padding: 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  text-align: left;
+}
+.summary-sites-table thead {
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+}
+
 /* Responsive tweaks */
 @media (max-width:768px){
   .header h1{font-size:20px}
@@ -466,6 +483,34 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
         <!-- NEW: Delete button, shown only when editing an existing row -->
         <button type="button" id="editDeleteBtn" class="btn-secondary" style="display:none;background: var(--accent-2); color: #fff; border: none; margin-top:8px;">🗑️ Delete</button>
       </form>
+    </div>
+  </div>
+</div>
+
+<!-- NEW: Summary sites/documents modal (for ALL DOCUMENTS VALID / ALL DOCUMENTS NOT VALID / TOTAL DOCS RENEWAL / TOTAL DOCS EXPIRED) -->
+<div id="summarySitesModal" class="modal">
+  <!-- widened to make everything visible -->
+  <div class="modal-content" style="max-width:1200px;">
+    <div class="modal-header">
+      <h2 id="summarySitesTitle">Sites</h2>
+      <span class="close" onclick="closeSummarySitesModal()">&times;</span>
+    </div>
+    <div class="modal-body">
+      <div id="summarySitesInfo" style="font-size:12px;color:var(--muted);margin-bottom:10px;"></div>
+      <div class="projects-table" style="margin-top:0;">
+        <table class="summary-sites-table">
+          <thead>
+            <tr>
+              <th>SN</th>
+              <th>Facility Type</th>
+              <th>Building Name</th>
+              <th>Building Code</th>
+              <th>Status / Document</th>
+            </tr>
+          </thead>
+          <tbody id="summarySitesBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>

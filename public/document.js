@@ -10,6 +10,11 @@
 // - Map/List aggregated status: if any document is unknown, the site is considered expired.
 // - Alerts: unknown (no date) entries are listed as expired with a clear message.
 // NEW: List view Exp/Ren/Val columns show per-site counts (unknown counted as expired). Also included in CSV/Excel/PDF exports.
+//
+// NEW (dashboard drill-down):
+// - renewalDocs: array of individual documents with status "renewal" (for TOTAL DOCUMENTS UNDER RENEWAL card).
+// - expiredDocs: array of individual documents with status "expired" or "unknown" (for TOTAL DOCUMENTS EXPIRED card).
+// Both are rebuilt in refreshDashboard() to keep counts and lists in sync.
 
 (function(){
   const API = {
@@ -70,7 +75,13 @@
 
   const state = {
     rows: [],
-    filtered: []
+    filtered: [],
+    // NEW: site lists backing the ALL DOCUMENTS VALID / ALL DOCUMENTS NOT VALID summary cards
+    allValidSites: [],
+    allNotValidSites: [],
+    // NEW: document-level lists backing TOTAL DOCUMENTS UNDER RENEWAL / TOTAL DOCUMENTS EXPIRED
+    renewalDocs: [],
+    expiredDocs: []
   };
 
   // Robust status parsing: treat missing/invalid dates as 'unknown'
@@ -272,16 +283,65 @@
 
     const types = ['istifaa','amc','doe_noc','coc','tpi'];
     const byType = Object.fromEntries(types.map(t => [t, { expired:0, renewal:0, valid:0, unknown:0 }]));
+
+    // NEW: rebuild document-level lists for cards 3 & 4
+    const renewalDocs = [];
+    const expiredDocs = [];
+
     sourceRows.forEach(r => {
-      const map = {
+      const statusMap = {
         istifaa: statusFromDate(r.istifaa_expiry_date),
         amc: statusFromDate(r.amc_expiry_date),
         doe_noc: statusFromDate(r.doe_noc_expiry_date),
         coc: statusFromDate(r.coc_expiry_date),
         tpi: statusFromDate(r.tpi_expiry_date),
       };
-      types.forEach(t => { byType[t][map[t]] = (byType[t][map[t]] || 0) + 1; });
+
+      // Per-document aggregation by type for the top-per-doc cards
+      types.forEach(t => {
+        const st = statusMap[t];
+        byType[t][st] = (byType[t][st] || 0) + 1;
+      });
+
+      // NEW: build per-document lists (renewalDocs / expiredDocs)
+      const docDefs = [
+        ['istifaa', 'ISTIFAA', r.istifaa_expiry_date],
+        ['amc', 'AMC', r.amc_expiry_date],
+        ['doe_noc', 'DOE NOC', r.doe_noc_expiry_date],
+        ['coc', 'COC', r.coc_expiry_date],
+        ['tpi', 'TPI', r.tpi_expiry_date],
+      ];
+
+      docDefs.forEach(([key, label, dateVal]) => {
+        const st = statusMap[key];
+        if (st === 'renewal') {
+          renewalDocs.push({
+            sn: r.sn || '',
+            building_type: r.building_type || '',
+            building_name: r.building_name || '',
+            building_code: r.building_code || '',
+            document_type: label,
+            expiry_date: toUiDate(dateVal),
+            status: 'renewal'
+          });
+        } else if (st === 'expired' || st === 'unknown') {
+          expiredDocs.push({
+            sn: r.sn || '',
+            building_type: r.building_type || '',
+            building_name: r.building_name || '',
+            building_code: r.building_code || '',
+            document_type: label,
+            expiry_date: toUiDate(dateVal),
+            status: 'expired' // unknown is treated as expired here
+          });
+        }
+      });
     });
+
+    // Store on state so modal drilldown can reuse
+    state.renewalDocs = renewalDocs;
+    state.expiredDocs = expiredDocs;
+
     const boxes = document.getElementById('dashboardBoxes');
     if (!boxes) return;
     const title = { istifaa:'ISTIFAA', amc:'AMC', doe_noc:'DOE NOC', coc:'COC', tpi:'TPI' };
@@ -309,10 +369,19 @@
     // Render the per-document cards in the main grid
     boxes.innerHTML = html;
 
-    // --- NEW SUMMARY CARDS (own bottom row container): strict all-valid, renewal-any, expired-any ---
+    // --- NEW SUMMARY CARDS (own bottom row container):
+    // 1) ALL DOCUMENTS VALID       (strict all-valid per site)
+    // 2) ALL DOCUMENTS NOT VALID   (all docs expired/unknown per site)
+    // 3) TOTAL DOCUMENTS UNDER RENEWAL (per-document renewal count)
+    // 4) TOTAL DOCUMENTS EXPIRED       (per-document expired + unknown count)
     let strictValidCount = 0;
-    let renewalCount = 0;
-    let expiredCount = 0;
+    let allNotValidCount = 0;
+    let totalDocsRenewal = 0;
+    let totalDocsExpired = 0;
+
+    const allValidSites = [];
+    const allNotValidSites = [];
+
     sourceRows.forEach(r => {
       const statuses = [
         statusFromDate(r.istifaa_expiry_date),
@@ -321,19 +390,31 @@
         statusFromDate(r.coc_expiry_date),
         statusFromDate(r.tpi_expiry_date),
       ];
-      const hasExpired = statuses.includes('expired');
-      const hasUnknown = statuses.includes('unknown');
-      const hasRenewal = statuses.includes('renewal');
+
+      // Per-site: ALL DOCUMENTS VALID
       const allValid = statuses.every(s => s === 'valid');
-      if (hasExpired || hasUnknown) {
-        expiredCount++;
-      } else if (allValid) {
+      if (allValid) {
         strictValidCount++;
-      } else if (hasRenewal) {
-        renewalCount++;
+        allValidSites.push(r);
       }
-      // Unknown-only sites are now counted as expired
+
+      // Per-site: ALL DOCUMENTS NOT VALID (only expired or unknown, no valid/renewal)
+      const allNotValid = statuses.every(s => s === 'expired' || s === 'unknown');
+      if (allNotValid) {
+        allNotValidCount++;
+        allNotValidSites.push(r);
+      }
+
+      // Per-document aggregation (for cards 3 & 4)
+      statuses.forEach(s => {
+        if (s === 'renewal') totalDocsRenewal++;
+        if (s === 'expired' || s === 'unknown') totalDocsExpired++;
+      });
     });
+
+    // Store site lists on state for modal drilldown
+    state.allValidSites = allValidSites;
+    state.allNotValidSites = allNotValidSites;
 
     // Ensure a separate container at the bottom of the dashboard for the summary cards
     const dashContent = document.getElementById('dashboardContent');
@@ -346,27 +427,46 @@
         // append as the last element in the dashboard content to keep it at the bottom
         dashContent.appendChild(bottomRow);
       }
-      // Build the three cards (order: left VALID, middle RENEWAL, right EXPIRED)
+      // Build the four cards in the requested order and names
       const bottomHtml = `
         <div class="dashboard-card" style="border-top:4px solid var(--accent)">
-          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">ALL VALID</h4>
-          <div style="text-align:center">
+          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">ALL DOCUMENTS VALID</h4>
+          <div style="text-align:center;margin-bottom:8px">
             <div style="font-size:28px;font-weight:800;color:#48bb78">${strictValidCount}</div>
             <div style="font-size:10px;color:var(--muted)">Sites with all documents valid</div>
           </div>
-        </div>
-        <div class="dashboard-card" style="border-top:4px solid var(--accent)">
-          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">RENEWAL</h4>
-          <div style="text-align:center">
-            <div style="font-size:28px;font-weight:800;color:#ed8936">${renewalCount}</div>
-            <div style="font-size:10px;color:var(--muted)">Sites requiring document renewal</div>
+          <div style="text-align:center;margin-top:6px">
+            <button type="button" class="nav-btn" style="height:30px;font-size:11px;padding:0 10px" onclick="openSummarySitesModal('allValid')">View sites</button>
           </div>
         </div>
         <div class="dashboard-card" style="border-top:4px solid var(--accent)">
-          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">EXPIRED</h4>
-          <div style="text-align:center">
-            <div style="font-size:28px;font-weight:800;color:#e53e3e">${expiredCount}</div>
-            <div style="font-size:10px;color:var(--muted)">Sites with expired documents</div>
+          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">ALL DOCUMENTS NOT VALID</h4>
+          <div style="text-align:center;margin-bottom:8px">
+            <div style="font-size:28px;font-weight:800;color:#e53e3e">${allNotValidCount}</div>
+            <div style="font-size:10px;color:var(--muted)">Sites with all documents expired</div>
+          </div>
+          <div style="text-align:center;margin-top:6px">
+            <button type="button" class="nav-btn" style="height:30px;font-size:11px;padding:0 10px" onclick="openSummarySitesModal('allNotValid')">View sites</button>
+          </div>
+        </div>
+        <div class="dashboard-card" style="border-top:4px solid var(--accent)">
+          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">TOTAL DOCUMENTS UNDER RENEWAL</h4>
+          <div style="text-align:center;margin-bottom:8px">
+            <div style="font-size:28px;font-weight:800;color:#ed8936">${totalDocsRenewal}</div>
+            <div style="font-size:10px;color:var(--muted)">Total documents expiring within 30 days</div>
+          </div>
+          <div style="text-align:center;margin-top:6px">
+            <button type="button" class="nav-btn" style="height:30px;font-size:11px;padding:0 10px" onclick="openSummarySitesModal('renewalDocs')">View documents</button>
+          </div>
+        </div>
+        <div class="dashboard-card" style="border-top:4px solid var(--accent)">
+          <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">TOTAL DOCUMENTS EXPIRED</h4>
+          <div style="text-align:center;margin-bottom:8px">
+            <div style="font-size:28px;font-weight:800;color:#e53e3e">${totalDocsExpired}</div>
+            <div style="font-size:10px;color:var(--muted)">Total expired documents</div>
+          </div>
+          <div style="text-align:center;margin-top:6px">
+            <button type="button" class="nav-btn" style="height:30px;font-size:11px;padding:0 10px" onclick="openSummarySitesModal('expiredDocs')">View documents</button>
           </div>
         </div>
       `;
@@ -466,7 +566,7 @@
       <div class="doc-section">
         <h4>Site & Position</h4>
         <div class="form-row">
-          <div class="form-group"><label>Building Type</label><input type="text" id="f-building_type" value="${row?.building_type || ''}"></div>
+          <div class="form-group"><label>Facility Type</label><input type="text" id="f-building_type" value="${row?.building_type || ''}"></div>
           <div class="form-group"><label>Building Code</label><input type="text" id="f-building_code" value="${row?.building_code || ''}"></div>
         </div>
         <div class="form-row">
@@ -759,6 +859,97 @@
     reloadAll().catch(err => alert('Reload failed: ' + (err && err.message)));
   }
 
+  // NEW: Summary sites/documents modal helpers
+  function openSummarySitesModal(kind) {
+    const modal = document.getElementById('summarySitesModal');
+    const titleEl = document.getElementById('summarySitesTitle');
+    const bodyEl = document.getElementById('summarySitesBody');
+    const infoEl = document.getElementById('summarySitesInfo');
+    if (!modal || !titleEl || !bodyEl || !infoEl) return;
+
+    let rows = [];
+    let isDocMode = false;
+
+    if (kind === 'allValid') {
+      rows = Array.isArray(state.allValidSites) ? state.allValidSites : [];
+      titleEl.textContent = 'ALL DOCUMENTS VALID – Sites';
+      infoEl.textContent = `Showing all ${rows.length} sites where all documents are valid.`;
+      isDocMode = false;
+    } else if (kind === 'allNotValid') {
+      rows = Array.isArray(state.allNotValidSites) ? state.allNotValidSites : [];
+      titleEl.textContent = 'ALL DOCUMENTS NOT VALID – Sites';
+      infoEl.textContent = `Showing all ${rows.length} sites where all documents are expired.`;
+      isDocMode = false;
+    } else if (kind === 'renewalDocs') {
+      rows = Array.isArray(state.renewalDocs) ? state.renewalDocs : [];
+      titleEl.textContent = 'TOTAL DOCUMENTS UNDER RENEWAL – Documents';
+      infoEl.textContent = `Showing all ${rows.length} documents in need of renewal.`;
+      isDocMode = true;
+    } else if (kind === 'expiredDocs') {
+      rows = Array.isArray(state.expiredDocs) ? state.expiredDocs : [];
+      titleEl.textContent = 'TOTAL DOCUMENTS EXPIRED – Documents';
+      infoEl.textContent = `Showing all ${rows.length} expired documents.`;
+      isDocMode = true;
+    } else {
+      rows = [];
+      titleEl.textContent = 'Sites';
+      infoEl.textContent = '';
+      isDocMode = false;
+    }
+
+    if (!rows.length) {
+      bodyEl.innerHTML = '<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--muted)">No matching records.</td></tr>';
+    } else {
+      if (!isDocMode) {
+        // Site-level rows (for ALL DOCUMENTS VALID / ALL DOCUMENTS NOT VALID)
+        bodyEl.innerHTML = rows.map(r => {
+          const st = aggregatedStatus(r);
+          const badge =
+            st === 'expired' ? '<span class="status-badge status-expired">Expired</span>' :
+            st === 'renewal' ? '<span class="status-badge status-renewal">Renewal</span>' :
+            st === 'valid' ? '<span class="status-badge status-valid">Valid</span>' :
+            '<span class="status-badge status-valid">Unknown</span>';
+          return `
+            <tr>
+              <td>${escapeHtml(r.sn || '')}</td>
+              <td>${escapeHtml(r.building_type || '')}</td>
+              <td>${escapeHtml(r.building_name || '')}</td>
+              <td>${escapeHtml(r.building_code || '')}</td>
+              <td>${badge}</td>
+            </tr>
+          `;
+        }).join('');
+      } else {
+        // Document-level rows (for renewalDocs / expiredDocs)
+        bodyEl.innerHTML = rows.map(d => {
+          const badge =
+            d.status === 'renewal' ? '<span class="status-badge status-renewal">Renewal</span>' :
+            '<span class="status-badge status-expired">Expired</span>';
+          return `
+            <tr>
+              <td>${escapeHtml(d.sn || '')}</td>
+              <td>${escapeHtml(d.building_type || '')}</td>
+              <td>${escapeHtml(d.building_name || '')}</td>
+              <td>${escapeHtml(d.building_code || '')}</td>
+              <td>
+                <div>${escapeHtml(d.document_type || '')}</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px;">Expiry: ${fmtDate(d.expiry_date)}</div>
+                <div style="margin-top:4px;">${badge}</div>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
+    }
+
+    modal.style.display = 'block';
+  }
+
+  function closeSummarySitesModal() {
+    const modal = document.getElementById('summarySitesModal');
+    if (modal) modal.style.display = 'none';
+  }
+
   // NEW: Excel import helpers
   function triggerExcelImport() {
     const input = document.getElementById('excel-import-input');
@@ -784,6 +975,7 @@
       's n': 'sn',
       'serial': 'sn',
       'building type': 'building_type',
+      'facility type': 'building_type', // NEW alias
       'type': 'building_type',
       'building code': 'building_code',
       'code': 'building_code',
@@ -922,6 +1114,8 @@
   window.saveEdit = saveEdit;
   window.reloadDocumentTracker = reloadDocumentTracker;
   window.triggerExcelImport = triggerExcelImport;
+  window.openSummarySitesModal = openSummarySitesModal;
+  window.closeSummarySitesModal = closeSummarySitesModal;
 
   // Boot
   window.addEventListener('load', () => {
@@ -930,4 +1124,5 @@
       alert('Failed to load document tracker.');
     });
   });
+
 })();
