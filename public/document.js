@@ -15,6 +15,13 @@
 // - renewalDocs: array of individual documents with status "renewal" (for TOTAL DOCUMENTS UNDER RENEWAL card).
 // - expiredDocs: array of individual documents with status "expired" or "unknown" (for TOTAL DOCUMENTS EXPIRED card).
 // Both are rebuilt in refreshDashboard() to keep counts and lists in sync.
+//
+// NEW: File upload support for 5 document types, stored as BYTEA in Postgres.
+// - Upload endpoints: POST /api/tank-documents/:id/upload/:type (type in {istifaa, amc, doe_noc, coc, tpi}).
+// - Download endpoints: GET /api/tank-documents/:id/file/:type.
+//
+// NEW: Separate "Documents" modal for uploads/downloads; main edit modal is only for site + expiry info.
+// NEW: Delete buttons in documents modal, implemented by uploading an empty file for that type.
 
 (function(){
   const API = {
@@ -58,7 +65,6 @@
       if (!r.ok) throw new Error('Delete failed');
       return r.json();
     },
-    // NEW: bulk import endpoint
     bulkImport: async (rows) => {
       const r = await fetch('/api/tank-documents/import', {
         method: 'POST',
@@ -70,21 +76,31 @@
         throw new Error(j.error || 'Import failed');
       }
       return r.json();
+    },
+    uploadFile: async (id, type, file) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch(`/api/tank-documents/${encodeURIComponent(id)}/upload/${encodeURIComponent(type)}`, {
+        method: 'POST',
+        body: fd
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || 'Upload failed');
+      }
+      return r.json();
     }
   };
 
   const state = {
     rows: [],
     filtered: [],
-    // NEW: site lists backing the ALL DOCUMENTS VALID / ALL DOCUMENTS NOT VALID summary cards
     allValidSites: [],
     allNotValidSites: [],
-    // NEW: document-level lists backing TOTAL DOCUMENTS UNDER RENEWAL / TOTAL DOCUMENTS EXPIRED
     renewalDocs: [],
     expiredDocs: []
   };
 
-  // Robust status parsing: treat missing/invalid dates as 'unknown'
   function statusFromDate(isoDate) {
     if (!isoDate) return 'unknown';
     const s = String(isoDate);
@@ -97,20 +113,14 @@
     return 'valid';
   }
 
-  // Helper: coerce any value to YYYY-MM-DD for date inputs
   function toUiDate(v) {
     if (v == null || v === '') return '';
     const s = String(v).trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; // already date-only
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
     const d = new Date(s.includes('T') ? s : (s + 'T00:00:00Z'));
     return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
   }
 
-  // Aggregated site status:
-  // - If ANY document is expired OR unknown -> site is expired
-  // - Else if ANY document is renewal -> site is renewal
-  // - Else if ANY document is valid -> site is valid
-  // - Else unknown
   function aggregatedStatus(r) {
     const all = [
       statusFromDate(r.istifaa_expiry_date),
@@ -130,7 +140,6 @@
     return 'unknown';
   }
 
-  // STRICT validity: all five documents must be 'valid' (no unknowns, no renewal, no expired)
   function allDocumentsValidStrict(r) {
     const statuses = [
       statusFromDate(r.istifaa_expiry_date),
@@ -148,7 +157,6 @@
       .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
   }
 
-  // UI-friendly date formatter: handles raw 'YYYY-MM-DD' and full ISO strings safely
   function fmtDate(d) {
     if (!d) return '—';
     const s = String(d);
@@ -156,7 +164,6 @@
     return isNaN(parsed.getTime()) ? '—' : parsed.toLocaleDateString();
   }
 
-  // Helper: count per-site document statuses (unknown treated as expired)
   function docStateCounts(row) {
     const statuses = [
       statusFromDate(row.istifaa_expiry_date),
@@ -174,7 +181,6 @@
     return { expired, renewal, valid };
   }
 
-  // Map
   let fullMap = null;
   function ensureMap() {
     if (fullMap) return;
@@ -196,7 +202,13 @@
           iconSize:[32,32], iconAnchor:[16,16]
         });
         const m = L.marker([p.latitude, p.longitude], { icon }).addTo(fullMap);
-        // Popup: show location name + overall document status + per-document dates; do NOT show SN
+        const hasFilesCount =
+          (p.istifaa_has_file ? 1 : 0) +
+          (p.amc_has_file ? 1 : 0) +
+          (p.doe_noc_has_file ? 1 : 0) +
+          (p.coc_has_file ? 1 : 0) +
+          (p.tpi_has_file ? 1 : 0);
+
         m.bindPopup(`<div style="min-width:240px">
           <div style="font-weight:700">${escapeHtml(p.building_name || p.building_code || '')}</div>
           <div style="font-size:12px;margin-top:6px;">
@@ -204,6 +216,9 @@
           </div>
           <div style="font-size:11px;color:var(--muted);margin-top:6px;">
             ISTIFAA: ${fmtDate(p.istifaa_expiry_date)} · AMC: ${fmtDate(p.amc_expiry_date)} · DOE NOC: ${fmtDate(p.doe_noc_expiry_date)} · COC: ${fmtDate(p.coc_expiry_date)} · TPI: ${fmtDate(p.tpi_expiry_date)}
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:6px;">
+            Files attached: ${hasFilesCount} / 5
           </div>
         </div>`);
         layers.push(m);
@@ -216,7 +231,6 @@
     setTimeout(() => { try { fullMap.invalidateSize(); } catch {} }, 150);
   }
 
-  // Alerts/Dashboard
   function updateAlerts(prefix, rowsOverride) {
     const rowsSrc = Array.isArray(rowsOverride) ? rowsOverride : state.filtered;
 
@@ -249,7 +263,6 @@
             });
           }
         } else {
-          // No date -> treat as expired for alerts
           expired.push({
             projectName: r.building_name || r.building_code || r.sn,
             docName: name,
@@ -279,12 +292,11 @@
   }
 
   function refreshDashboard() {
-    const sourceRows = state.rows; // always use full dataset for dashboard
+    const sourceRows = state.rows;
 
     const types = ['istifaa','amc','doe_noc','coc','tpi'];
     const byType = Object.fromEntries(types.map(t => [t, { expired:0, renewal:0, valid:0, unknown:0 }]));
 
-    // NEW: rebuild document-level lists for cards 3 & 4
     const renewalDocs = [];
     const expiredDocs = [];
 
@@ -297,13 +309,11 @@
         tpi: statusFromDate(r.tpi_expiry_date),
       };
 
-      // Per-document aggregation by type for the top-per-doc cards
       types.forEach(t => {
         const st = statusMap[t];
         byType[t][st] = (byType[t][st] || 0) + 1;
       });
 
-      // NEW: build per-document lists (renewalDocs / expiredDocs)
       const docDefs = [
         ['istifaa', 'ISTIFAA', r.istifaa_expiry_date],
         ['amc', 'AMC', r.amc_expiry_date],
@@ -332,13 +342,12 @@
             building_code: r.building_code || '',
             document_type: label,
             expiry_date: toUiDate(dateVal),
-            status: 'expired' // unknown is treated as expired here
+            status: 'expired'
           });
         }
       });
     });
 
-    // Store on state so modal drilldown can reuse
     state.renewalDocs = renewalDocs;
     state.expiredDocs = expiredDocs;
 
@@ -349,7 +358,6 @@
     types.forEach(t => {
       const s = byType[t];
       const total = (s.expired + s.renewal + s.valid + s.unknown);
-      // NEW: Show expired as remainder to guarantee consistency
       const expiredDisplay = Math.max(0, total - s.valid - s.renewal);
       html += `
         <div class="dashboard-card" style="border-top:4px solid var(--accent)">
@@ -366,14 +374,8 @@
       `;
     });
 
-    // Render the per-document cards in the main grid
     boxes.innerHTML = html;
 
-    // --- NEW SUMMARY CARDS (own bottom row container):
-    // 1) ALL DOCUMENTS VALID       (strict all-valid per site)
-    // 2) ALL DOCUMENTS NOT VALID   (all docs expired/unknown per site)
-    // 3) TOTAL DOCUMENTS UNDER RENEWAL (per-document renewal count)
-    // 4) TOTAL DOCUMENTS EXPIRED       (per-document expired + unknown count)
     let strictValidCount = 0;
     let allNotValidCount = 0;
     let totalDocsRenewal = 0;
@@ -391,32 +393,27 @@
         statusFromDate(r.tpi_expiry_date),
       ];
 
-      // Per-site: ALL DOCUMENTS VALID
       const allValid = statuses.every(s => s === 'valid');
       if (allValid) {
         strictValidCount++;
         allValidSites.push(r);
       }
 
-      // Per-site: ALL DOCUMENTS NOT VALID (only expired or unknown, no valid/renewal)
       const allNotValid = statuses.every(s => s === 'expired' || s === 'unknown');
       if (allNotValid) {
         allNotValidCount++;
         allNotValidSites.push(r);
       }
 
-      // Per-document aggregation (for cards 3 & 4)
       statuses.forEach(s => {
         if (s === 'renewal') totalDocsRenewal++;
         if (s === 'expired' || s === 'unknown') totalDocsExpired++;
       });
     });
 
-    // Store site lists on state for modal drilldown
     state.allValidSites = allValidSites;
     state.allNotValidSites = allNotValidSites;
 
-    // Ensure a separate container at the bottom of the dashboard for the summary cards
     const dashContent = document.getElementById('dashboardContent');
     if (dashContent) {
       let bottomRow = document.getElementById('dashboardSummaryBottom');
@@ -424,10 +421,8 @@
         bottomRow = document.createElement('div');
         bottomRow.id = 'dashboardSummaryBottom';
         bottomRow.className = 'dashboard-grid';
-        // append as the last element in the dashboard content to keep it at the bottom
         dashContent.appendChild(bottomRow);
       }
-      // Build the four cards in the requested order and names
       const bottomHtml = `
         <div class="dashboard-card" style="border-top:4px solid var(--accent)">
           <h4 style="font-size:13px;margin-bottom:12px;color:var(--accent);font-weight:700">ALL DOCUMENTS VALID</h4>
@@ -473,13 +468,11 @@
       bottomRow.innerHTML = bottomHtml;
     }
 
-    // Alerts: dashboard uses full dataset; map/list keep using current filtered set
     updateAlerts('dash', sourceRows);
-    updateAlerts('map');  // filtered
-    updateAlerts('list'); // filtered
+    updateAlerts('map');
+    updateAlerts('list');
   }
 
-  // List rendering with filters
   function currentFilters() {
     const term = (document.getElementById('filterSearch')?.value || '').toLowerCase().trim();
     const sf = (document.getElementById('filterStatus')?.value || 'all');
@@ -490,16 +483,13 @@
   function applyFiltersInternal() {
     const { term, sf, df } = currentFilters();
     state.filtered = (state.rows || []).filter(r => {
-      // search across SN / building_name / building_code
       if (term) {
         const hay = `${r.sn || ''} ${r.building_name || ''} ${r.building_code || ''}`.toLowerCase();
         if (!hay.includes(term)) return false;
       }
-      // status
       if (sf && sf !== 'all') {
         if (aggregatedStatus(r) !== sf) return false;
       }
-      // document filter: include row if that doc has a date (or always true if 'all')
       if (df && df !== 'all') {
         const map = {
           istifaa: r.istifaa_expiry_date,
@@ -519,7 +509,7 @@
     if (!tbody) return;
     const rows = state.filtered;
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--muted)">No projects found</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--muted)">No projects found</td></tr>';
       return;
     }
     tbody.innerHTML = rows.map(r => {
@@ -531,6 +521,12 @@
         '<span class="status-badge status-valid">Unknown</span>';
 
       const counts = docStateCounts(r);
+      const filesCount =
+        (r.istifaa_has_file ? 1 : 0) +
+        (r.amc_has_file ? 1 : 0) +
+        (r.doe_noc_has_file ? 1 : 0) +
+        (r.coc_has_file ? 1 : 0) +
+        (r.tpi_has_file ? 1 : 0);
 
       return `
         <tr data-id="${r.id}">
@@ -541,12 +537,15 @@
           <td>${counts.expired}</td>
           <td>${counts.renewal}</td>
           <td>${counts.valid}</td>
-          <td><button class="edit-btn" data-action="edit">✏️ Edit</button></td>
+          <td>${filesCount} / 5</td>
+          <td>
+            <button class="edit-btn" data-action="edit">✏️ Edit</button>
+            <button class="edit-btn" data-action="docs">📄 Documents</button>
+          </td>
         </tr>
       `;
     }).join('');
 
-    // Wire edit buttons
     tbody.querySelectorAll('button[data-action="edit"]').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -557,9 +556,19 @@
         openEditModal(row || null);
       });
     });
+
+    tbody.querySelectorAll('button[data-action="docs"]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const tr = btn.closest('tr');
+        const id = tr ? tr.getAttribute('data-id') : null;
+        if (!id) return;
+        const row = state.rows.find(x => String(x.id) === String(id));
+        openDocsModal(row || null);
+      });
+    });
   }
 
-  // Edit modal
   function buildEditForm(row) {
     return `
       <input type="hidden" id="f-id" value="${row?.id ?? ''}">
@@ -615,7 +624,6 @@
     editDocs.innerHTML = buildEditForm(row || null);
     modal.style.display = 'block';
 
-    // NEW: show/hide and wire Delete button for existing records
     const deleteBtn = document.getElementById('editDeleteBtn');
     if (deleteBtn) {
       if (isNew) {
@@ -674,7 +682,160 @@
     }
   }
 
-  // Alerts filtering (sidebar search boxes)
+  function fillDocsInfoHeader(row) {
+    const info = document.getElementById('docsProjectInfo');
+    if (!info) return;
+    info.innerHTML = `
+      <h3 style="margin:0 0 4px 0;color:var(--accent);font-size:14px">${escapeHtml(row.building_name || row.building_code || row.sn || '')}</h3>
+      <p style="margin:0;font-size:11px;color:var(--muted)">SN: ${escapeHtml(row.sn || '')} · Code: ${escapeHtml(row.building_code || '')}</p>
+    `;
+  }
+
+  function fillDocsAttachmentInfo(row) {
+    const id = row && row.id;
+    const docs = [
+      { key: 'istifaa', label: 'ISTIFAA', hasProp: 'istifaa_has_file', nameProp: 'istifaa_file_name', tsProp: 'istifaa_file_uploaded_at' },
+      { key: 'amc', label: 'AMC', hasProp: 'amc_has_file', nameProp: 'amc_file_name', tsProp: 'amc_file_uploaded_at' },
+      { key: 'doe_noc', label: 'DOE NOC', hasProp: 'doe_noc_has_file', nameProp: 'doe_noc_file_name', tsProp: 'doe_noc_file_uploaded_at' },
+      { key: 'coc', label: 'COC', hasProp: 'coc_has_file', nameProp: 'coc_file_name', tsProp: 'coc_file_uploaded_at' },
+      { key: 'tpi', label: 'TPI', hasProp: 'tpi_has_file', nameProp: 'tpi_file_name', tsProp: 'tpi_file_uploaded_at' },
+    ];
+    docs.forEach(doc => {
+      const infoEl = document.getElementById(`docs-info-${doc.key}`);
+      if (!infoEl) return;
+      const has = row && row[doc.hasProp];
+      const name = row && row[doc.nameProp];
+      const ts = row && row[doc.tsProp];
+      if (id && has) {
+        const url = `/api/tank-documents/${encodeURIComponent(id)}/file/${encodeURIComponent(doc.key)}`;
+        infoEl.innerHTML = `
+          <div>
+            <a href="${url}" target="_blank" style="color:var(--accent);font-size:12px;text-decoration:none;">📄 View ${doc.label} file</a>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">
+            ${escapeHtml(name || '')}${ts ? ' · Uploaded: ' + fmtDate(ts) : ''}
+          </div>
+        `;
+      } else {
+        infoEl.innerHTML = `<span style="font-size:11px;color:var(--muted)">No file uploaded.</span>`;
+      }
+      const input = document.getElementById(`docs-file-${doc.key}`);
+      if (input) input.value = '';
+    });
+  }
+
+  function openDocsModal(row) {
+    const modal = document.getElementById('docsModal');
+    if (!modal) return;
+    const idInput = document.getElementById('docs-id');
+    if (idInput) idInput.value = row && row.id ? row.id : '';
+    fillDocsInfoHeader(row || {});
+    fillDocsAttachmentInfo(row || {});
+    modal.style.display = 'block';
+
+    // Show/hide delete buttons based on whether a file exists
+    const docs = [
+      { key: 'istifaa', hasProp: 'istifaa_has_file' },
+      { key: 'amc', hasProp: 'amc_has_file' },
+      { key: 'doe_noc', hasProp: 'doe_noc_has_file' },
+      { key: 'coc', hasProp: 'coc_has_file' },
+      { key: 'tpi', hasProp: 'tpi_has_file' },
+    ];
+    docs.forEach(doc => {
+      const btn = document.querySelector(`button[data-doc-delete="${doc.key}"]`);
+      if (!btn) return;
+      const has = row && row[doc.hasProp];
+      btn.style.display = has ? '' : 'none';
+    });
+  }
+
+  function closeDocsModal() {
+    const modal = document.getElementById('docsModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  async function saveDocs(event) {
+    if (event && typeof event.preventDefault === 'function') event.preventDefault();
+    const id = document.getElementById('docs-id')?.value || '';
+    if (!id) {
+      alert('Record ID not found.');
+      return;
+    }
+
+    const fileInputs = [
+      { key: 'istifaa', el: document.getElementById('docs-file-istifaa') },
+      { key: 'amc', el: document.getElementById('docs-file-amc') },
+      { key: 'doe_noc', el: document.getElementById('docs-file-doe_noc') },
+      { key: 'coc', el: document.getElementById('docs-file-coc') },
+      { key: 'tpi', el: document.getElementById('docs-file-tpi') },
+    ];
+
+    try {
+      for (const fi of fileInputs) {
+        if (fi.el && fi.el.files && fi.el.files[0]) {
+          const file = fi.el.files[0];
+          try {
+            await API.uploadFile(id, fi.key, file);
+          } catch (err) {
+            alert(`${fi.key.toUpperCase()} upload failed: ` + (err && err.message || 'Unknown'));
+          }
+        }
+      }
+      closeDocsModal();
+      await reloadAll();
+      alert('✅ Documents updated');
+    } catch (err) {
+      alert('Save failed: ' + (err && err.message || 'Unknown'));
+    }
+  }
+
+  // "Delete" file by telling the server to clear the stored file for that type (set SQL columns to NULL)
+  async function deleteDocFile(type) {
+    const id = document.getElementById('docs-id')?.value || '';
+    if (!id) {
+      alert('Record ID not found.');
+      return;
+    }
+    const confirmMsg = `Are you sure you want to delete the ${type.toUpperCase()} file?`;
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      // Call upload endpoint with a special query flag that the server interprets as "clear file"
+      const r = await fetch(`/api/tank-documents/${encodeURIComponent(id)}/upload/${encodeURIComponent(type)}?mode=delete`, {
+        method: 'POST'
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || 'Delete failed');
+      }
+
+      // Reload all rows and update local state
+      await reloadAll();
+      const row = state.rows.find(x => String(x.id) === String(id));
+      if (row) {
+        fillDocsAttachmentInfo(row);
+
+        // Update delete button visibility after deletion
+        const hasPropMap = {
+          istifaa: 'istifaa_has_file',
+          amc: 'amc_has_file',
+          doe_noc: 'doe_noc_has_file',
+          coc: 'coc_has_file',
+          tpi: 'tpi_has_file'
+        };
+        const hasProp = hasPropMap[type];
+        const btn = document.querySelector(`button[data-doc-delete="${type}"]`);
+        if (btn && hasProp) {
+          btn.style.display = row[hasProp] ? '' : 'none';
+        }
+      }
+
+      alert('🗑️ File deleted');
+    } catch (err) {
+      alert('Delete failed: ' + (err && err.message || 'Unknown'));
+    }
+  }
+
   function filterAlerts(prefix) {
     const term = (document.getElementById(prefix+'SearchAlerts')?.value || '').toLowerCase();
     document.querySelectorAll('#'+prefix+'AlertsList .alert-item').forEach(i => {
@@ -682,12 +843,17 @@
     });
   }
 
-  // Export helpers (use current filtered rows)
   function exportToCSV() {
-    let csv='SN,Building Name,Building Code,ISTIFAA Exp,AMC Exp,DOE NOC Exp,COC Exp,TPI Exp,Exp Count,Ren Count,Val Count,Status\n';
+    let csv='SN,Building Name,Building Code,ISTIFAA Exp,AMC Exp,DOE NOC Exp,COC Exp,TPI Exp,Exp Count,Ren Count,Val Count,Files Count,Status\n';
     state.filtered.forEach(r=>{
       const s = aggregatedStatus(r);
       const counts = docStateCounts(r);
+      const filesCount =
+        (r.istifaa_has_file ? 1 : 0) +
+        (r.amc_has_file ? 1 : 0) +
+        (r.doe_noc_has_file ? 1 : 0) +
+        (r.coc_has_file ? 1 : 0) +
+        (r.tpi_has_file ? 1 : 0);
       csv+=[
         r.sn || '',
         (r.building_name || '').replace(/"/g,'""'),
@@ -700,6 +866,7 @@
         counts.expired,
         counts.renewal,
         counts.valid,
+        filesCount,
         s
       ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(',') + '\n';
     });
@@ -715,6 +882,12 @@
   function exportToExcel() {
     const data = state.filtered.map(r => {
       const counts = docStateCounts(r);
+      const filesCount =
+        (r.istifaa_has_file ? 1 : 0) +
+        (r.amc_has_file ? 1 : 0) +
+        (r.doe_noc_has_file ? 1 : 0) +
+        (r.coc_has_file ? 1 : 0) +
+        (r.tpi_has_file ? 1 : 0);
       return {
         'SN': r.sn || '',
         'Building Name': r.building_name || '',
@@ -727,6 +900,7 @@
         'Exp Count': counts.expired,
         'Ren Count': counts.renewal,
         'Val Count': counts.valid,
+        'Files Count': filesCount,
         'Status': aggregatedStatus(r)
       };
     });
@@ -746,6 +920,12 @@
     doc.text('Generated: '+new Date().toLocaleDateString(),14,28);
     const data=state.filtered.map(r=>{
       const counts = docStateCounts(r);
+      const filesCount =
+        (r.istifaa_has_file ? 1 : 0) +
+        (r.amc_has_file ? 1 : 0) +
+        (r.doe_noc_has_file ? 1 : 0) +
+        (r.coc_has_file ? 1 : 0) +
+        (r.tpi_has_file ? 1 : 0);
       return [
         r.sn || '',
         (r.building_name || '').substring(0,20),
@@ -758,12 +938,13 @@
         counts.expired,
         counts.renewal,
         counts.valid,
+        filesCount,
         aggregatedStatus(r)
       ];
     });
     doc.autoTable({
       startY:35,
-      head:[['SN','Name','Code','ISTIFAA','AMC','DOE NOC','COC','TPI','Exp','Ren','Val','Status']],
+      head:[['SN','Name','Code','ISTIFAA','AMC','DOE NOC','COC','TPI','Exp','Ren','Val','Files','Status']],
       body:data,
       theme:'striped',
       headStyles:{fillColor:[102,126,234]},
@@ -772,7 +953,6 @@
     doc.save('tank_documents.pdf');
   }
 
-  // Sidebar toggling (compatible with existing HTML)
   const sidebarStates={dash:false,map:false,list:false};
   function getCurrentScreen(){
     if(document.getElementById('dashboard')?.classList.contains('active'))return'dash';
@@ -804,14 +984,12 @@
   function showScreen(sn){
     document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
     document.getElementById(sn)?.classList.add('active');
-    // update nav button active state
     const navBtns = Array.from(document.querySelectorAll('.nav-buttons .nav-btn'));
     navBtns.forEach(b => b.classList.remove('active'));
     if (sn === 'dashboard') navBtns[0]?.classList.add('active');
     else if (sn === 'map') navBtns[1]?.classList.add('active');
     else if (sn === 'list') navBtns[2]?.classList.add('active');
 
-    // close sidebars when switching
     ['dash','map','list'].forEach(s=>{
       const sb=document.getElementById(s+'Sidebar');
       if(sb)sb.classList.remove('open');
@@ -825,17 +1003,14 @@
     else if (sn === 'list') renderList();
   }
 
-  // Public filter apply (wired to controls)
   function applyFilters() {
     applyFiltersInternal();
     renderList();
     updateAlerts('list');
   }
 
-  // Reload all from API
   async function reloadAll() {
     const json = await API.list();
-    // Normalize dates to YYYY-MM-DD so the entire UI is consistent and inputs prefill correctly
     state.rows = (json.rows || []).map(r => ({
       ...r,
       istifaa_expiry_date: toUiDate(r.istifaa_expiry_date),
@@ -859,7 +1034,6 @@
     reloadAll().catch(err => alert('Reload failed: ' + (err && err.message)));
   }
 
-  // NEW: Summary sites/documents modal helpers
   function openSummarySitesModal(kind) {
     const modal = document.getElementById('summarySitesModal');
     const titleEl = document.getElementById('summarySitesTitle');
@@ -901,7 +1075,6 @@
       bodyEl.innerHTML = '<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--muted)">No matching records.</td></tr>';
     } else {
       if (!isDocMode) {
-        // Site-level rows (for ALL DOCUMENTS VALID / ALL DOCUMENTS NOT VALID)
         bodyEl.innerHTML = rows.map(r => {
           const st = aggregatedStatus(r);
           const badge =
@@ -920,7 +1093,6 @@
           `;
         }).join('');
       } else {
-        // Document-level rows (for renewalDocs / expiredDocs)
         bodyEl.innerHTML = rows.map(d => {
           const badge =
             d.status === 'renewal' ? '<span class="status-badge status-renewal">Renewal</span>' :
@@ -950,7 +1122,6 @@
     if (modal) modal.style.display = 'none';
   }
 
-  // NEW: Excel import helpers
   function triggerExcelImport() {
     const input = document.getElementById('excel-import-input');
     if (!input) return;
@@ -967,7 +1138,6 @@
     input.click();
   }
 
-  // Normalize various header spellings to our field keys
   function normHeader(h) {
     const s = String(h || '').toLowerCase().trim();
     const key = s.replace(/[\s._-]+/g,' ');
@@ -975,7 +1145,7 @@
       's n': 'sn',
       'serial': 'sn',
       'building type': 'building_type',
-      'facility type': 'building_type', // NEW alias
+      'facility type': 'building_type',
       'type': 'building_type',
       'building code': 'building_code',
       'code': 'building_code',
@@ -998,10 +1168,8 @@
     return map[key] || null;
   }
 
-  // Convert a cell value to YYYY-MM-DD (UTC) safely
   function cellToIsoDate(v) {
     if (v == null || v === '') return '';
-    // Excel dates: number -> use XLSX.SSF.parse_date_code
     if (typeof v === 'number') {
       try {
         const d = XLSX.SSF.parse_date_code(v);
@@ -1009,14 +1177,12 @@
           const js = new Date(Date.UTC(d.y, (d.m || 1) - 1, d.d || 1));
           return js.toISOString().slice(0, 10);
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {}
     }
-    // JS Date
     if (v instanceof Date) {
       if (!isNaN(v.getTime())) return v.toISOString().slice(0, 10);
       return '';
     }
-    // string -> Date
     const s = String(v).trim();
     if (!s) return '';
     const tryParse = new Date(s.includes('T') ? s : (s + 'T00:00:00Z'));
@@ -1029,18 +1195,16 @@
     const wb = XLSX.read(buf, { type: 'array' });
     const sheetName = wb.SheetNames[0];
     const sheet = wb.Sheets[sheetName];
-    // Get rows as arrays to control header mapping
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
     if (!rows || rows.length < 2) throw new Error('No data found in the first sheet');
 
     const headerRow = rows[0];
-    const idxMap = {}; // fieldKey -> column index
+    const idxMap = {};
     headerRow.forEach((h, idx) => {
       const key = normHeader(h);
       if (key) idxMap[key] = idx;
     });
 
-    // Ensure minimum required keys present
     const required = ['building_code', 'building_name'];
     const missing = required.filter(k => !(k in idxMap));
     if (missing.length) {
@@ -1050,14 +1214,13 @@
     const out = [];
     for (let r = 1; r < rows.length; r++) {
       const row = rows[r];
-      // skip entirely empty rows
       const nonEmpty = row.some(v => v != null && String(v).trim() !== '');
       if (!nonEmpty) continue;
 
       const building_code = row[idxMap['building_code']] != null ? String(row[idxMap['building_code']]).trim() : '';
       const building_name = row[idxMap['building_name']] != null ? String(row[idxMap['building_name']]).trim() : '';
 
-      if (!building_code && !building_name) continue; // need something to identify
+      if (!building_code && !building_name) continue;
 
       const payload = {
         building_type: idxMap['building_type'] != null ? String(row[idxMap['building_type']] || '').trim() : '',
@@ -1072,7 +1235,6 @@
         tpi_expiry_date: idxMap['tpi_expiry_date'] != null ? cellToIsoDate(row[idxMap['tpi_expiry_date']]) : '',
         notes: idxMap['notes'] != null ? String(row[idxMap['notes']] || '').trim() : ''
       };
-      // numeric lat/lng if possible
       if (payload.latitude != null && payload.latitude !== '') {
         const n = Number(payload.latitude);
         payload.latitude = isNaN(n) ? null : n;
@@ -1089,18 +1251,15 @@
       return;
     }
 
-    // POST bulk payload to server
     const res = await API.bulkImport(out);
     const inserted = res.inserted || 0;
     const updated = res.updated || 0;
     const failed = res.failed || 0;
     alert(`✅ Import finished.\nInserted: ${inserted}\nUpdated: ${updated}\nFailed: ${failed}`);
 
-    // Reload UI
     await reloadAll();
   }
 
-  // Expose globals used by inline HTML
   window.showScreen = showScreen;
   window.toggleSidebar = toggleSidebar;
   window.getCurrentScreen = getCurrentScreen;
@@ -1116,8 +1275,11 @@
   window.triggerExcelImport = triggerExcelImport;
   window.openSummarySitesModal = openSummarySitesModal;
   window.closeSummarySitesModal = closeSummarySitesModal;
+  window.openDocsModal = openDocsModal;
+  window.closeDocsModal = closeDocsModal;
+  window.saveDocs = saveDocs;
+  window.deleteDocFile = deleteDocFile;
 
-  // Boot
   window.addEventListener('load', () => {
     reloadAll().catch(e => {
       console.error(e);

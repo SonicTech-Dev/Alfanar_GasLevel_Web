@@ -16,6 +16,9 @@ const { Server: SocketIO } = require('socket.io');
 // NEW: bcryptjs for credential hashing/verification (portable)
 const bcrypt = require('bcryptjs');
 
+// NEW: multer for file uploads
+const multer = require('multer');
+
 const app = express();
 const PORT = process.env.PORT || 3007;
 
@@ -1419,6 +1422,22 @@ function rowWithStatuses(r) {
     notes: r.notes || null,
     created_at: normalizeDbTimestampToIso(r.created_at),
     updated_at: normalizeDbTimestampToIso(r.updated_at),
+    // NEW: file metadata booleans + names + uploaded_at
+    istifaa_has_file: !!r.istifaa_file,
+    istifaa_file_name: r.istifaa_file_name || null,
+    istifaa_file_uploaded_at: normalizeDbTimestampToIso(r.istifaa_file_uploaded_at),
+    amc_has_file: !!r.amc_file,
+    amc_file_name: r.amc_file_name || null,
+    amc_file_uploaded_at: normalizeDbTimestampToIso(r.amc_file_uploaded_at),
+    doe_noc_has_file: !!r.doe_noc_file,
+    doe_noc_file_name: r.doe_noc_file_name || null,
+    doe_noc_file_uploaded_at: normalizeDbTimestampToIso(r.doe_noc_file_uploaded_at),
+    coc_has_file: !!r.coc_file,
+    coc_file_name: r.coc_file_name || null,
+    coc_file_uploaded_at: normalizeDbTimestampToIso(r.coc_file_uploaded_at),
+    tpi_has_file: !!r.tpi_file,
+    tpi_file_name: r.tpi_file_name || null,
+    tpi_file_uploaded_at: normalizeDbTimestampToIso(r.tpi_file_uploaded_at),
     statuses: {
       istifaa: computeStatusForDate(ist),
       amc: computeStatusForDate(amc),
@@ -1441,7 +1460,12 @@ app.get('/api/tank-documents', async (req, res) => {
       let sql = `
         SELECT id, sn, building_type, building_code, building_name, latitude, longitude,
                istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
-               notes, created_at, updated_at
+               notes, created_at, updated_at,
+               istifaa_file, istifaa_file_name, istifaa_file_type, istifaa_file_uploaded_at,
+               amc_file, amc_file_name, amc_file_type, amc_file_uploaded_at,
+               doe_noc_file, doe_noc_file_name, doe_noc_file_type, doe_noc_file_uploaded_at,
+               coc_file, coc_file_name, coc_file_type, coc_file_uploaded_at,
+               tpi_file, tpi_file_name, tpi_file_type, tpi_file_uploaded_at
         FROM tank_documents
       `;
       const params = [];
@@ -1471,7 +1495,12 @@ app.get('/api/tank-documents/:id', async (req, res) => {
       const r = await client.query(
         `SELECT id, sn, building_type, building_code, building_name, latitude, longitude,
                 istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
-                notes, created_at, updated_at
+                notes, created_at, updated_at,
+                istifaa_file, istifaa_file_name, istifaa_file_type, istifaa_file_uploaded_at,
+                amc_file, amc_file_name, amc_file_type, amc_file_uploaded_at,
+                doe_noc_file, doe_noc_file_name, doe_noc_file_type, doe_noc_file_uploaded_at,
+                coc_file, coc_file_name, coc_file_type, coc_file_uploaded_at,
+                tpi_file, tpi_file_name, tpi_file_type, tpi_file_uploaded_at
          FROM tank_documents WHERE id = $1 LIMIT 1`, [id]
       );
       if (!r.rows || r.rows.length === 0) return res.status(404).json({ error: 'not found' });
@@ -1529,7 +1558,12 @@ app.post('/api/tank-documents', express.json(), async (req, res) => {
           updated_at = now()
         RETURNING id, sn, building_type, building_code, building_name, latitude, longitude,
                   istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
-                  notes, created_at, updated_at;
+                  notes, created_at, updated_at,
+                  istifaa_file, istifaa_file_name, istifaa_file_type, istifaa_file_uploaded_at,
+                  amc_file, amc_file_name, amc_file_type, amc_file_uploaded_at,
+                  doe_noc_file, doe_noc_file_name, doe_noc_file_type, doe_noc_file_uploaded_at,
+                  coc_file, coc_file_name, coc_file_type, coc_file_uploaded_at,
+                  tpi_file, tpi_file_name, tpi_file_type, tpi_file_uploaded_at;
       `;
       const params = [building_type, building_code, building_name, latitude, longitude,
         istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes];
@@ -1582,7 +1616,12 @@ app.put('/api/tank-documents/:id', express.json(), async (req, res) => {
       const r = await client.query(
         `UPDATE tank_documents SET ${columns.join(', ')}, updated_at = now()
          WHERE id = $${idx} RETURNING id, sn, building_type, building_code, building_name, latitude, longitude,
-           istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes, created_at, updated_at`,
+           istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes, created_at, updated_at,
+           istifaa_file, istifaa_file_name, istifaa_file_type, istifaa_file_uploaded_at,
+           amc_file, amc_file_name, amc_file_type, amc_file_uploaded_at,
+           doe_noc_file, doe_noc_file_name, doe_noc_file_type, doe_noc_file_uploaded_at,
+           coc_file, coc_file_name, coc_file_type, coc_file_uploaded_at,
+           tpi_file, tpi_file_name, tpi_file_type, tpi_file_uploaded_at`,
         params
       );
       if (!r.rows || r.rows.length === 0) return res.status(404).json({ error: 'not found' });
@@ -1713,6 +1752,162 @@ const r = await client.query(qIns, params);
   } catch (err) {
     console.warn('POST /api/tank-documents/import failed:', err && err.message);
     return res.status(500).json({ error: 'failed to import documents' });
+  }
+});
+
+/* -------------------------
+   NEW: BYTEA file upload/download for tank_documents
+   ------------------------- */
+
+// Simple multer setup for single file field "file"
+const DOC_MAX_FILE_MB = parseInt(process.env.DOC_MAX_FILE_MB || '20', 10);
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: DOC_MAX_FILE_MB * 1024 * 1024
+  }
+});
+
+// Map from URL segment to DB column prefix
+const DOC_TYPE_MAP = {
+  istifaa: 'istifaa',
+  amc: 'amc',
+  doe_noc: 'doe_noc',
+  coc: 'coc',
+  tpi: 'tpi'
+};
+
+// Helper: validate docType
+function normalizeDocType(param) {
+  const key = String(param || '').toLowerCase();
+  if (DOC_TYPE_MAP[key]) return DOC_TYPE_MAP[key];
+  return null;
+}
+
+// Upload endpoint: POST /api/tank-documents/:id/upload/:type
+app.post(
+  '/api/tank-documents/:id/upload/:type',
+  // We still attach multer, but for delete mode (no file) it will simply not populate req.file
+  upload.single('file'),
+  async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+
+      const typeKey = normalizeDocType(req.params.type);
+      if (!typeKey) return res.status(400).json({ error: 'invalid document type' });
+
+      const colFile = `${typeKey}_file`;
+      const colName = `${typeKey}_file_name`;
+      const colType = `${typeKey}_file_type`;
+      const colUploaded = `${typeKey}_file_uploaded_at`;
+
+      const client = await pool.connect();
+      try {
+        // If mode=delete, CLEAR columns (proper deletion => SQL NULL)
+        if (req.query.mode === 'delete') {
+          const qDel = `
+            UPDATE tank_documents
+            SET ${colFile} = NULL,
+                ${colName} = NULL,
+                ${colType} = NULL,
+                ${colUploaded} = NULL,
+                updated_at = now()
+            WHERE id = $1
+            RETURNING id;
+          `;
+          const rDel = await client.query(qDel, [id]);
+          if (!rDel.rows || rDel.rows.length === 0) {
+            return res.status(404).json({ error: 'not found' });
+          }
+          return res.json({ ok: true, id, type: typeKey, deleted: true });
+        }
+
+        // Normal upload flow requires a file
+        if (!req.file) {
+          return res.status(400).json({ error: 'file field is required' });
+        }
+
+        const fileBuffer = req.file.buffer;
+        const fileName = req.file.originalname || null;
+        const fileType = req.file.mimetype || 'application/octet-stream';
+
+        const q = `
+          UPDATE tank_documents
+          SET ${colFile} = $1,
+              ${colName} = $2,
+              ${colType} = $3,
+              ${colUploaded} = now(),
+              updated_at = now()
+          WHERE id = $4
+          RETURNING id, ${colName} AS file_name, ${colType} AS file_type, ${colUploaded} AS uploaded_at;
+        `;
+        const r = await client.query(q, [fileBuffer, fileName, fileType, id]);
+        if (!r.rows || r.rows.length === 0) {
+          return res.status(404).json({ error: 'not found' });
+        }
+        const row = r.rows[0];
+        return res.json({
+          ok: true,
+          id: row.id,
+          type: typeKey,
+          file_name: row.file_name || null,
+          file_type: row.file_type || null,
+          uploaded_at: normalizeDbTimestampToIso(row.uploaded_at)
+        });
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      console.warn('POST /api/tank-documents/:id/upload/:type failed:', err && err.message);
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'file too large' });
+      }
+      return res.status(500).json({ error: 'failed to upload file' });
+    }
+  }
+);
+
+// Download endpoint: GET /api/tank-documents/:id/file/:type
+app.get('/api/tank-documents/:id/file/:type', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+
+    const typeKey = normalizeDocType(req.params.type);
+    if (!typeKey) return res.status(400).json({ error: 'invalid document type' });
+
+    const colFile = `${typeKey}_file`;
+    const colName = `${typeKey}_file_name`;
+    const colType = `${typeKey}_file_type`;
+
+    const client = await pool.connect();
+    try {
+      const q = `
+        SELECT ${colFile} AS file_data, ${colName} AS file_name, ${colType} AS file_type
+        FROM tank_documents
+        WHERE id = $1
+        LIMIT 1
+      `;
+      const r = await client.query(q, [id]);
+      if (!r.rows || r.rows.length === 0) {
+        return res.status(404).json({ error: 'not found' });
+      }
+      const row = r.rows[0];
+      if (!row.file_data) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+      const mime = row.file_type || 'application/octet-stream';
+      const name = row.file_name || `${typeKey}.bin`;
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Disposition', `inline; filename="${name.replace(/"/g, '')}"`);
+      return res.send(row.file_data);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('GET /api/tank-documents/:id/file/:type failed:', err && err.message);
+    return res.status(500).json({ error: 'failed to fetch file' });
   }
 });
 

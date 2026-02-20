@@ -238,7 +238,8 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
 .edit-btn{
   background: transparent;color: var(--text);
   border:1px solid rgba(255,255,255,0.04);
-  padding:6px 12px;border-radius:8px;cursor:pointer;font-size:11px;font-weight:700
+  padding:6px 12px;border-radius:8px;cursor:pointer;font-size:11px;font-weight:700;
+  margin-right:4px;
 }
 .edit-btn:hover{background: rgba(255,255,255,0.02)}
 
@@ -448,7 +449,7 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
     </div>
     <div class="projects-table">
       <table>
-        <thead><tr><th>ID</th><th>Name</th><th>Location</th><th>Status</th><th>Exp</th><th>Ren</th><th>Val</th><th>Actions</th></tr></thead>
+        <thead><tr><th>ID</th><th>Name</th><th>Location</th><th>Status</th><th>Exp</th><th>Ren</th><th>Val</th><th>Files</th><th>Actions</th></tr></thead>
         <tbody id="projectsTableBody"></tbody>
       </table>
     </div>
@@ -468,10 +469,11 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
   </div>
 </div>
 
+<!-- Main Edit Modal: ONLY site + expiry info now -->
 <div id="editModal" class="modal">
   <div class="modal-content">
     <div class="modal-header">
-      <h2>✏️ Edit Documents</h2>
+      <h2>✏️ Edit Site & Expiry</h2>
       <span class="close" onclick="closeEditModal()">&times;</span>
     </div>
     <div class="modal-body">
@@ -487,7 +489,91 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
   </div>
 </div>
 
-<!-- NEW: Summary sites/documents modal (for ALL DOCUMENTS VALID / ALL DOCUMENTS NOT VALID / TOTAL DOCS RENEWAL / TOTAL DOCS EXPIRED) -->
+<!-- Documents-only modal for upload/download + delete -->
+<div id="docsModal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>📄 Documents</h2>
+      <span class="close" onclick="closeDocsModal()">&times;</span>
+    </div>
+    <div class="modal-body">
+      <div id="docsProjectInfo" style="background: rgba(255,255,255,0.02); padding:12px; border-radius:10px; margin-bottom:15px; border:1px solid rgba(255,255,255,0.04)"></div>
+      <form id="docsForm" onsubmit="saveDocs(event)">
+        <input type="hidden" id="docs-id" value="">
+
+        <div class="doc-section">
+          <h4>ISTIFAA Document</h4>
+          <div id="docs-info-istifaa" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
+          <div class="form-group">
+            <label>Upload / Replace</label>
+            <input type="file" id="docs-file-istifaa" accept="application/pdf,image/*">
+          </div>
+          <button type="button"
+                  class="btn-secondary"
+                  style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
+                  onclick="deleteDocFile('istifaa')">🗑️ Delete ISTIFAA File</button>
+        </div>
+
+        <div class="doc-section">
+          <h4>AMC Document</h4>
+          <div id="docs-info-amc" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
+          <div class="form-group">
+            <label>Upload / Replace</label>
+            <input type="file" id="docs-file-amc" accept="application/pdf,image/*">
+          </div>
+          <button type="button"
+                  class="btn-secondary"
+                  style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
+                  onclick="deleteDocFile('amc')">🗑️ Delete AMC File</button>
+        </div>
+
+        <div class="doc-section">
+          <h4>DOE NOC Document</h4>
+          <div id="docs-info-doe_noc" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
+          <div class="form-group">
+            <label>Upload / Replace</label>
+            <input type="file" id="docs-file-doe_noc" accept="application/pdf,image/*">
+          </div>
+          <button type="button"
+                  class="btn-secondary"
+                  style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
+                  onclick="deleteDocFile('doe_noc')">🗑️ Delete DOE NOC File</button>
+        </div>
+
+        <div class="doc-section">
+          <h4>COC Document</h4>
+          <div id="docs-info-coc" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
+          <div class="form-group">
+            <label>Upload / Replace</label>
+            <input type="file" id="docs-file-coc" accept="application/pdf,image/*">
+          </div>
+          <button type="button"
+                  class="btn-secondary"
+                  style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
+                  onclick="deleteDocFile('coc')">🗑️ Delete COC File</button>
+        </div>
+
+        <div class="doc-section">
+          <h4>TPI Document</h4>
+          <div id="docs-info-tpi" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
+          <div class="form-group">
+            <label>Upload / Replace</label>
+            <input type="file" id="docs-file-tpi" accept="application/pdf,image/*">
+          </div>
+          <button type="button"
+                  class="btn-secondary"
+                  style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
+                  onclick="deleteDocFile('tpi')">🗑️ Delete TPI File</button>
+        </div>
+
+        <button type="submit" class="btn-primary">💾 Save Documents</button>
+        <button type="button" class="btn-secondary" onclick="closeDocsModal()">Cancel</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Summary sites/documents modal (for ALL DOCUMENTS VALID / ALL DOCUMENTS NOT VALID / TOTAL DOCS RENEWAL / TOTAL DOCS EXPIRED) -->
 <div id="summarySitesModal" class="modal">
   <!-- widened to make everything visible -->
   <div class="modal-content" style="max-width:1200px;">
@@ -516,6 +602,6 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
 </div>
 
 <!-- Load the new, API-backed logic (replaces the old inline script/localStorage) -->
-<script src="document.js?v=1"></script>
+<script src="document.js?v=4"></script>
 </body>
 </html>
