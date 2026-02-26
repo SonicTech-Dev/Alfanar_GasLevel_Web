@@ -19,6 +19,9 @@ const bcrypt = require('bcryptjs');
 // NEW: multer for file uploads
 const multer = require('multer');
 
+// NEW: sessions (server-side auth persistence)
+const session = require('express-session');
+
 const app = express();
 const PORT = process.env.PORT || 3007;
 
@@ -51,13 +54,85 @@ async function testDb() {
 }
 testDb().catch(e => console.warn('DB test error', e && e.message));
 
-app.use(express.static(path.join(__dirname, 'public')));
-
 // parse JSON bodies (used by several endpoints including login-attempt)
 app.use(express.json({ limit: '250kb' }));
 
+/* -------------------------
+   NEW: Session support (server-side auth persistence)
+   ------------------------- */
+
+function isProd() {
+  const env = String(process.env.NODE_ENV || '').toLowerCase();
+  return env === 'production';
+}
+
+const SESSION_SECRET = process.env.SESSION_SECRET || '';
+if (!SESSION_SECRET) {
+  console.warn(
+    'WARNING: SESSION_SECRET is not set. Set SESSION_SECRET in production to a long random string.'
+  );
+}
+
+app.set('trust proxy', 1); // to support secure cookies behind proxies/ingress
+
+app.use(
+  session({
+    name: process.env.SESSION_COOKIE_NAME || 'sid',
+    secret: SESSION_SECRET || 'dev_insecure_session_secret_change_me',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: isProd(), // requires HTTPS in production
+      maxAge: 30 * 60 * 1000, // 30 minutes
+    },
+  })
+);
+
+// Helper middleware: enforce authentication for pages and APIs
+function requireAuth(req, res, next) {
+  try {
+    if (req.session && req.session.user) return next();
+
+    // API requests -> 401 JSON
+    if (req.path.startsWith('/api/')) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+
+    // Everything else (pages) -> redirect to /login with next
+    const nextUrl = encodeURIComponent(req.originalUrl || '/');
+    return res.redirect(`/login?next=${nextUrl}`);
+  } catch (e) {
+    // Fail closed
+    if (req.path && req.path.startsWith('/api/')) return res.status(401).json({ error: 'unauthorized' });
+    return res.redirect('/login');
+  }
+}
+
+// Serve static assets, but do NOT allow direct access to protected HTML pages via /index.html etc.
+app.use(
+  express.static(path.join(__dirname, 'public'), {
+    index: false, // prevent implicit index.html from bypassing route protection
+  })
+);
+
+/* -------------------------
+   ROUTES (pages)
+   ------------------------- */
+
+// Dedicated login page
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// Protect core app pages
+app.get('/', requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 /* Serve Document.html when visiting /Document-Tracker */
-app.get('/Document-Tracker', (req, res) => {
+app.get('/Document-Tracker', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'Document.html'));
 });
 
@@ -67,13 +142,22 @@ app.get('/Document.html', (req, res) => {
 });
 
 /* Serve Dashboard at /dashboard */
-app.get('/dashboard', (req, res) => {
+app.get('/dashboard', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
 });
 
 /* Optional: redirect old filename to the friendly path */
 app.get('/dashboard.html', (req, res) => {
   res.redirect(301, '/dashboard');
+});
+
+/* Block direct access to the static HTML entrypoints (defense-in-depth).
+   These would otherwise be served by express.static. */
+app.get('/index.html', requireAuth, (req, res) => {
+  res.redirect('/');
+});
+app.get('/Document-Tracker/index.html', requireAuth, (req, res) => {
+  res.redirect('/Document-Tracker');
 });
 
 /* Ensure login_attempts table exists */
@@ -759,7 +843,7 @@ if (pollOnStartup) {
 }
 
 /* -------------------------
-   NEW: Login (DB-backed) endpoint
+   NEW: Login (DB-backed) endpoint (now session-backed)
    ------------------------- */
 
 // Helper to get client IP (respect x-forwarded-for if behind proxy)
@@ -839,12 +923,156 @@ app.post('/api/login', async (req, res) => {
         await client.query(`UPDATE tank_credentials SET last_login_at = now() WHERE id = $1`, [row.id]);
       } catch (e) { /* ignore */ }
 
+      // NEW: set session state (real auth persistence)
+      try {
+        req.session.user = { username: row.username, role: row.role };
+      } catch (e) {
+        return res.status(500).json({ error: 'Failed to establish session' });
+      }
+
       return res.json({ ok: true, username: row.username, role: row.role });
     } finally {
       client.release();
     }
   } catch (err) {
     console.warn('POST /api/login failed:', err && err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/logout (session destroy)
+app.post('/api/logout', async (req, res) => {
+  try {
+    if (!req.session) return res.json({ ok: true });
+    req.session.destroy(() => {
+      // Best-effort cookie clear
+      try {
+        res.clearCookie(process.env.SESSION_COOKIE_NAME || 'sid');
+      } catch (e) { /* ignore */ }
+      return res.json({ ok: true });
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'failed to logout' });
+  }
+});
+
+// GET /api/me (optional helper for front-end role gating)
+app.get('/api/me', (req, res) => {
+  try {
+    if (req.session && req.session.user) {
+      return res.json({ ok: true, user: req.session.user });
+    }
+    return res.status(401).json({ error: 'unauthorized' });
+  } catch (err) {
+    return res.status(500).json({ error: 'failed' });
+  }
+});
+
+/* -------------------------
+   NEW: Change Password endpoint (session-backed)
+   - viewer cannot use
+   - editor (Alfanar_Admin1) can change self + viewer (Alfanar_GasLevel1)
+   - admin (Sonic) can change all
+   - Always require current password of the logged-in user for confirmation
+   ------------------------- */
+
+// Helper: decide if requester can change target username
+function canChangePasswordTarget(requesterUsername, requesterRole, targetUsername) {
+  const reqU = String(requesterUsername || '').trim();
+  const reqR = String(requesterRole || '').trim();
+  const tgtU = String(targetUsername || '').trim();
+
+  // viewers cannot change passwords (even their own)
+  if (reqR === 'viewer') return false;
+
+  // Sonic can change all
+  if (reqU === 'Sonic' && reqR === 'admin') return true;
+
+  // Editor account can change itself and viewer
+  if (reqU === 'Alfanar_Admin1' && reqR === 'editor') {
+    return (tgtU === 'Alfanar_Admin1' || tgtU === 'Alfanar_GasLevel1');
+  }
+
+  // Default: no
+  return false;
+}
+
+// POST /api/change-password
+// Body: { targetUsername, currentPassword, newPassword }
+// Notes:
+// - currentPassword is the password of the LOGGED-IN USER (confirmation)
+// - targetUsername can be self or (if allowed) another account per rules above
+app.post('/api/change-password', requireAuth, async (req, res) => {
+  try {
+    const sessionUser = (req.session && req.session.user) ? req.session.user : null;
+    const requesterUsername = sessionUser && sessionUser.username ? String(sessionUser.username) : '';
+    const requesterRole = sessionUser && sessionUser.role ? String(sessionUser.role) : '';
+
+    if (!requesterUsername || !requesterRole) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+
+    // Block viewer explicitly
+    if (requesterRole === 'viewer') {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    const body = req.body || {};
+    const targetUsername = body.targetUsername ? String(body.targetUsername).trim() : '';
+    const currentPassword = body.currentPassword ? String(body.currentPassword) : '';
+    const newPassword = body.newPassword ? String(body.newPassword) : '';
+
+    if (!targetUsername || !currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'targetUsername, currentPassword and newPassword are required' });
+    }
+
+    if (!canChangePasswordTarget(requesterUsername, requesterRole, targetUsername)) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    // Basic policy: require at least 6 chars (can be adjusted)
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+    }
+
+    const client = await pool.connect();
+    try {
+      // 1) Verify the requester's current password
+      const rq = await client.query(
+        `SELECT id, username, password_hash, role, disabled FROM tank_credentials WHERE username = $1 LIMIT 1`,
+        [requesterUsername]
+      );
+      if (!rq.rows || rq.rows.length === 0) {
+        return res.status(401).json({ error: 'unauthorized' });
+      }
+      const requesterRow = rq.rows[0];
+      if (requesterRow.disabled) {
+        return res.status(403).json({ error: 'Account disabled' });
+      }
+
+      const ok = await bcrypt.compare(currentPassword, requesterRow.password_hash);
+      if (!ok) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+
+      // 2) Update the target user's password_hash
+      const saltRounds = Math.max(8, parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10));
+      const newHash = await bcrypt.hash(newPassword, saltRounds);
+
+      const up = await client.query(
+        `UPDATE tank_credentials SET password_hash = $1 WHERE username = $2 RETURNING username, role`,
+        [newHash, targetUsername]
+      );
+      if (!up.rows || up.rows.length === 0) {
+        return res.status(404).json({ error: 'target user not found' });
+      }
+
+      return res.json({ ok: true, targetUsername: up.rows[0].username });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('POST /api/change-password failed:', err && err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -895,7 +1123,7 @@ app.post('/api/login-attempt', async (req, res) => {
 // GET /api/login-attempts
 // Query params: limit, offset, isAdmin (1/0), success(1/0), username (partial), since (ISO), until (ISO)
 // If LOGIN_ATTEMPTS_READ_KEY is set, require header X-ADMIN-KEY to match.
-app.get('/api/login-attempts', async (req, res) => {
+app.get('/api/login-attempts', requireAuth, async (req, res) => {
   try {
     const requiredKey = process.env.LOGIN_ATTEMPTS_READ_KEY || '';
     if (requiredKey) {
@@ -972,6 +1200,12 @@ app.get('/api/login-attempts', async (req, res) => {
     return res.status(500).json({ error: 'failed to fetch login attempts' });
   }
 });
+
+/* -------------------------
+   Protect all remaining /api/* routes by default
+   (must come AFTER /api/login, /api/logout, /api/me)
+   ------------------------- */
+app.use('/api', requireAuth);
 
 /* API endpoints (existing) */
 
@@ -1697,36 +1931,36 @@ app.post('/api/tank-documents/import', async (req, res) => {
             continue;
           }
 
-// INSERT or UPDATE on conflict (sn, building_code)
-const qIns = `
-  INSERT INTO tank_documents
-    (sn, building_type, building_code, building_name, latitude, longitude,
-     istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
-     notes, created_at, updated_at)
-  VALUES (
-    (SELECT COALESCE(MAX(CAST(regexp_replace(sn, '\\D', '', 'g') AS INTEGER)), 0) + 1 FROM tank_documents),
-    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()
-  )
-  ON CONFLICT ON CONSTRAINT uniq_sn_building DO UPDATE SET
-    building_type = EXCLUDED.building_type,
-    building_code = EXCLUDED.building_code,
-    building_name = EXCLUDED.building_name,
-    latitude = EXCLUDED.latitude,
-    longitude = EXCLUDED.longitude,
-    istifaa_expiry_date = EXCLUDED.istifaa_expiry_date,
-    amc_expiry_date = EXCLUDED.amc_expiry_date,
-    doe_noc_expiry_date = EXCLUDED.doe_noc_expiry_date,
-    coc_expiry_date = EXCLUDED.coc_expiry_date,
-    tpi_expiry_date = EXCLUDED.tpi_expiry_date,
-    notes = EXCLUDED.notes,
-    updated_at = now()
-  RETURNING id
-`;
-const params = [
-  building_type, building_code, building_name, latitude, longitude,
-  istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes
-];
-const r = await client.query(qIns, params);
+          // INSERT or UPDATE on conflict (sn, building_code)
+          const qIns = `
+            INSERT INTO tank_documents
+              (sn, building_type, building_code, building_name, latitude, longitude,
+               istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
+               notes, created_at, updated_at)
+            VALUES (
+              (SELECT COALESCE(MAX(CAST(regexp_replace(sn, '\\D', '', 'g') AS INTEGER)), 0) + 1 FROM tank_documents),
+              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()
+            )
+            ON CONFLICT ON CONSTRAINT uniq_sn_building DO UPDATE SET
+              building_type = EXCLUDED.building_type,
+              building_code = EXCLUDED.building_code,
+              building_name = EXCLUDED.building_name,
+              latitude = EXCLUDED.latitude,
+              longitude = EXCLUDED.longitude,
+              istifaa_expiry_date = EXCLUDED.istifaa_expiry_date,
+              amc_expiry_date = EXCLUDED.amc_expiry_date,
+              doe_noc_expiry_date = EXCLUDED.doe_noc_expiry_date,
+              coc_expiry_date = EXCLUDED.coc_expiry_date,
+              tpi_expiry_date = EXCLUDED.tpi_expiry_date,
+              notes = EXCLUDED.notes,
+              updated_at = now()
+            RETURNING id
+          `;
+          const params = [
+            building_type, building_code, building_name, latitude, longitude,
+            istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes
+          ];
+          const r = await client.query(qIns, params);
 
           if (r.rowCount && r.rows && r.rows[0] && r.rows[0].id) {
             inserted++;
@@ -1996,7 +2230,7 @@ try {
     }
   });
 
-// --- REPLACE the mqttClient.on('message', ...) handler with the following block ---
+  // --- REPLACE the mqttClient.on('message', ...) handler with the following block ---
 
   mqttClient.on('message', (topic, messageBuf) => {
     try {
@@ -2106,13 +2340,12 @@ async function doPingLoop() {
   const host = PING_IP_230346;
   try {
     const res = await ping.promise.probe(host, { timeout: 2 });
-    const was = deviceStatus[tid] && deviceStatus[tid].panelOnline;
     const nowIso = new Date().toISOString();
     if (!deviceStatus[tid]) deviceStatus[tid] = { terminal_id: tid, lel: null, lastLelAt: null, panelOnline: false, lastPingAt: null, topic: MQTT_TOPIC_230346 };
     deviceStatus[tid].panelOnline = !!res.alive;
     deviceStatus[tid].lastPingAt = nowIso;
 
-    // Broadcast only if changed OR include periodic heartbeat update (we'll broadcast each run to keep clients in sync)
+    // Broadcast each run to keep clients in sync
     const payload = {
       type: 'status_update',
       terminal_id: tid,
@@ -2179,8 +2412,6 @@ try {
 
     // Send initial snapshot
     try {
-      const snapshot = { type: 'init', payload: deviceStatus };
-      // send as 'init' event
       socket.emit('init', deviceStatus);
     } catch (e) { console.warn('[io] send snapshot exception', e && e.message); }
 

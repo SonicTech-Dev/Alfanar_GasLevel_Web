@@ -131,32 +131,69 @@ try {
   if (!isNaN(savedPage) && savedPage >= 1) currentListPage = savedPage;
 } catch (e) { /* ignore */ }
 
-// Simple auth helper (in-memory flag set by the login modal during this page load)
-function isLoggedIn() {
+/* ---------------------------
+   AUTH / BOOTSTRAP (NEW)
+   - Server enforces sessions and redirects unauthenticated users.
+   - Client still needs /api/me to know role/username for UI gating.
+   - We do NOT rely on window._clientAuthenticated or app:login events anymore.
+   --------------------------- */
+
+// Local bootstrap state (authoritative for this page)
+const authState = {
+  ready: false,
+  user: null,      // { username, role } or null
+  role: '',        // 'admin'|'editor'|'viewer'|'' (empty means unknown)
+  username: ''     // '' means unknown
+};
+
+async function bootstrapAuth() {
   try {
-    return !!window._clientAuthenticated;
+    const resp = await fetch('/api/me', { cache: 'no-store' });
+    if (!resp.ok) throw new Error('not logged in');
+    const json = await resp.json().catch(() => ({}));
+    const u = (json && json.user) ? json.user : null;
+
+    authState.user = u;
+    authState.username = u && u.username ? String(u.username).trim() : '';
+    authState.role = u && u.role ? String(u.role).trim() : '';
+    authState.ready = true;
+
+    // Backward-compat: some existing code paths may still read these globals.
+    try { window._clientAuthenticated = true; } catch (e) { /* ignore */ }
+    try { window._clientUsername = authState.username; } catch (e) { /* ignore */ }
+    try { window._clientIsAdmin = (authState.role === 'admin'); } catch (e) { /* ignore */ }
+
+    return authState;
   } catch (e) {
-    return false;
+    // Fail-safe: if server didn't redirect for some reason, do it client-side.
+    try {
+      window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
+    } catch (err) { /* ignore */ }
+    throw e;
   }
 }
 
-// New helper to detect admin login
+// New helpers
 function isAdmin() {
-  try {
-    return !!window._clientIsAdmin;
-  } catch (e) {
-    return false;
-  }
+  return authState.role === 'admin';
+}
+function isEditor() {
+  return authState.role === 'editor';
+}
+function isViewer() {
+  return authState.role === 'viewer';
 }
 
 // Who can see the Device Information menu (Sonic or Alfanar_Admin1)
 function canSeeDeviceInformation() {
-  try {
-    const u = (window._clientUsername || '').trim();
-    return (u === 'Sonic' || u === 'Alfanar_Admin1');
-  } catch (e) {
-    return false;
-  }
+  const u = (authState.username || '').trim();
+  return (u === 'Sonic' || u === 'Alfanar_Admin1');
+}
+
+// Who can see Change Password menu (Sonic or Alfanar_Admin1)
+function canSeeChangePassword() {
+  const u = (authState.username || '').trim();
+  return (u === 'Sonic' || u === 'Alfanar_Admin1');
 }
 
 // Simple HTML escape
@@ -2269,172 +2306,220 @@ function showDeviceInfoModal(initialSerial) {
 }
 
 /* ---------------------------
-   Read-only Tank Info View Modal
+   Change Passwords (NEW)
+   - Visible for Sonic and Alfanar_Admin1
+   - Sonic can change: Sonic, Alfanar_Admin1, Alfanar_GasLevel1
+   - Alfanar_Admin1 can change: Alfanar_Admin1, Alfanar_GasLevel1
+   - Always asks for current password of the logged-in user
+   - Calls a new /api/... endpoint (agreed) and shows success/error message
    --------------------------- */
 
-// Show a professional, read-only modal with tank_info values for a terminal
-function showTankInfoViewModal(terminalId) {
-  const modal = document.createElement('div');
-  modal.className = 'history-modal tank-info-view';
-  modal.innerHTML = `
-    <div class="history-panel" role="dialog" aria-modal="true" aria-label="Device Information View for ${escapeHtml(terminalId)}">
-      <div class="history-actions" style="align-items:center;">
+function allowedPasswordTargetsForUser(username) {
+  const u = String(username || '').trim();
+  if (u === 'Sonic') {
+    return [
+      { value: 'Sonic', label: 'Sonic' },
+      { value: 'Alfanar_Admin1', label: 'Alfanar_Admin1' },
+      { value: 'Alfanar_GasLevel1', label: 'Alfanar_GasLevel1' }
+    ];
+  }
+  if (u === 'Alfanar_Admin1') {
+    return [
+      { value: 'Alfanar_Admin1', label: 'Alfanar_Admin1' },
+      { value: 'Alfanar_GasLevel1', label: 'Alfanar_GasLevel1' }
+    ];
+  }
+  return [];
+}
+
+function buildChangePasswordModalHtml(uniqueId, targets) {
+  const options = targets.map(t => `<option value="${escapeHtml(t.value)}">${escapeHtml(t.label)}</option>`).join('');
+  return `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="Change Password">
+      <div class="history-actions">
         <div style="display:flex;align-items:center;gap:12px;">
-          <strong>Device Information</strong>
+          <strong>Change Password</strong>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           <div class="history-controls">
+            <button class="btn cp-save" type="button">Save</button>
             <button class="history-close" type="button">Close</button>
           </div>
         </div>
       </div>
 
-      <div id="tank-info-view-body" style="display:grid;grid-template-columns: 1fr 1fr; gap:18px; padding-top:8px;">
-        <div style="background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:16px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
-          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:700;">Building / Company</div>
-          <div id="view-building" style="font-size:15px;color:var(--text);"></div>
-
-          <div style="font-size:13px;color:var(--muted);margin-top:12px;font-weight:700;">Address</div>
-          <div id="view-address" style="font-size:14px;color:var(--text);"></div>
-
-          <div style="display:flex;gap:12px;margin-top:12px;">
-            <div style="flex:1;">
-              <div style="font-size:13px;color:var(--muted);font-weight:700;">AFG Bld Code</div>
-              <div id="view-afg" style="font-size:14px;color:var(--text);"></div>
-            </div>
-            <div style="flex:1;">
-              <div style="font-size:13px;color:var(--muted);font-weight:700;">Client Bld Code</div>
-              <div id="view-client" style="font-size:14px;color:var(--text);"></div>
-            </div>
-          </div>
-
-          <!-- NEW: Min/Max display -->
-          <div style="margin-top:12px;">
-            <div style="font-size:13px;color:var(--muted);font-weight:700;">LPG Min Level</div>
-            <div id="view-min-level" style="font-size:14px;color:var(--text);"></div>
-
-            <div style="font-size:13px;color:var(--muted);margin-top:8px;font-weight:700;">LPG Max Level</div>
-            <div id="view-max-level" style="font-size:14px;color:var(--text);"></div>
-          </div>
-
-          <!-- NEW: Project Code & Emirate -->
-          <div style="margin-top:12px;">
-            <div style="font-size:13px;color:var(--muted);font-weight:700;">Project Code</div>
-            <div id="view-project-code" style="font-size:14px;color:var(--text);"></div>
-
-            <div style="font-size:13px;color:var(--muted);margin-top:8px;font-weight:700;">Emirate</div>
-            <div id="view-emirate" style="font-size:14px;color:var(--text);"></div>
-          </div>
+      <div style="display:grid;grid-template-columns: 1fr 1fr; gap:14px; align-items:start;">
+        <div style="grid-column: 1 / -1; color:var(--muted); font-size:13px; line-height:1.4;">
+          You must enter your <strong>current password</strong>. Then choose which account to update and set a new password.
         </div>
 
-        <div style="background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:16px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
-          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:700;">LPG Tank Capacity</div>
-          <div id="view-capacity" style="font-size:15px;color:var(--text);"></div>
-
-          <div style="font-size:13px;color:var(--muted);margin-top:12px;font-weight:700;">LPG Tank Details</div>
-          <div id="view-details" style="font-size:14px;color:var(--text);"></div>
-
-          <div style="display:flex;gap:12px;margin-top:12px;">
-            <div style="flex:1;">
-              <div style="font-size:13px;color:var(--muted);font-weight:700;">Tank Type</div>
-              <div id="view-type" style="font-size:14px;color:var(--text);"></div>
-            </div>
-            <div style="flex:1;">
-              <div style="font-size:13px;color:var(--muted);font-weight:700;">Installation</div>
-              <div id="view-install" style="font-size:14px;color:var(--text);"></div>
-            </div>
-          </div>
-
-          <div style="margin-top:12px;">
-            <div style="font-size:13px;color:var(--muted);font-weight:700;">Alarm E-mail</div>
-            <div id="view-alarm-email" style="font-size:14px;color:var(--text);"></div>
-          </div>
+        <div style="grid-column: 1 / -1;">
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;font-weight:700;">Target account</label>
+          <select id="cp-target-${uniqueId}" class="graph-title-input" style="width:100%;">
+            ${options}
+          </select>
         </div>
 
-        <!-- full-width supplemental area -->
-        <div style="grid-column: 1 / -1; margin-top:6px; display:flex; justify-content:space-between; gap:12px;">
-          <div style="flex:1; background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:14px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
-            <div style="font-size:13px;color:var(--muted);font-weight:700;">Notes</div>
-            <div id="view-notes" style="font-size:14px;color:var(--muted); margin-top:6px;">(No additional notes)</div>
-          </div>
-          <div style="width:240px; flex-shrink:0; background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:14px; border-radius:10px; border:1px solid rgba(255,255,255,0.02); text-align:center;">
-            <div style="font-size:12px;color:var(--muted);font-weight:700;">Last saved</div>
-            <div id="view-saved-at" style="font-size:13px;color:var(--text); margin-top:8px;"></div>
-          </div>
+        <div style="grid-column: 1 / -1;">
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;font-weight:700;">Current Admin Password</label>
+          <input id="cp-current-${uniqueId}" class="graph-title-input" type="password" autocomplete="current-password" placeholder="Current password" />
+        </div>
+
+        <div>
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;font-weight:700;">New password</label>
+          <input id="cp-new-${uniqueId}" class="graph-title-input" type="password" autocomplete="new-password" placeholder="New password" />
+        </div>
+
+        <div>
+          <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;font-weight:700;">Confirm new password</label>
+          <input id="cp-confirm-${uniqueId}" class="graph-title-input" type="password" autocomplete="new-password" placeholder="Confirm new password" />
+        </div>
+
+        <div style="grid-column: 1 / -1;">
+          <div id="cp-msg-${uniqueId}" class="history-msg" style="margin-top:6px;"></div>
         </div>
       </div>
-
-      <div id="tank-info-view-msg" class="history-msg" style="margin-top:12px;"></div>
     </div>
   `;
+}
 
+async function changePasswordApi({ currentPassword, targetUsername, newPassword }) {
+  // NOTE: endpoint name agreed as /api/... (implemented server-side).
+  // Expected request:
+  // { current_password, target_username, new_password }
+  const resp = await fetch('/api/change-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      target_username: targetUsername,
+      new_password: newPassword
+    })
+  });
+
+  const json = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(json.error || json.message || 'Change password failed');
+  }
+  return json;
+}
+
+function showChangePasswordModal() {
+  const me = (authState && authState.username) ? String(authState.username).trim() : '';
+  const targets = allowedPasswordTargetsForUser(me);
+  if (!targets.length) {
+    alert('You do not have permission to change passwords.');
+    return;
+  }
+
+  const unique = 'cp' + Date.now();
+  const modal = document.createElement('div');
+  modal.className = 'history-modal';
+  modal.innerHTML = buildChangePasswordModalHtml(unique, targets);
   document.body.appendChild(modal);
   document.body.classList.add('modal-open');
 
   const closeBtn = modal.querySelector('.history-close');
-  const msgEl = modal.querySelector('#tank-info-view-msg');
+  const saveBtn = modal.querySelector('.cp-save');
+  const msgEl = modal.querySelector(`#cp-msg-${unique}`);
+
+  const targetEl = modal.querySelector(`#cp-target-${unique}`);
+  const currentEl = modal.querySelector(`#cp-current-${unique}`);
+  const newEl = modal.querySelector(`#cp-new-${unique}`);
+  const confirmEl = modal.querySelector(`#cp-confirm-${unique}`);
 
   function removeModal() {
     modal.remove();
     document.body.classList.remove('modal-open');
   }
 
+  function setMsg(text, color) {
+    if (!msgEl) return;
+    msgEl.textContent = text || '';
+    if (color) msgEl.style.color = color;
+    else msgEl.style.color = 'var(--muted)';
+  }
+
   closeBtn.addEventListener('click', removeModal);
   modal.addEventListener('click', (e) => { if (e.target === modal) removeModal(); });
 
-  // populate fields
-  (async () => {
-    try {
-      msgEl.textContent = 'Loading…';
-      const info = await fetchTankInfo(terminalId);
-      modal.querySelector('#view-building').textContent = info.building_name || '—';
-      modal.querySelector('#view-address').textContent = info.address || '—';
-      modal.querySelector('#view-afg').textContent = info.afg_bld_code || '—';
-      modal.querySelector('#view-client').textContent = info.client_bld_code || '—';
-      modal.querySelector('#view-capacity').textContent = info.lpg_tank_capacity || '—';
-      modal.querySelector('#view-details').textContent = info.lpg_tank_details || '—';
-      modal.querySelector('#view-type').textContent = info.lpg_tank_type || '—';
-      modal.querySelector('#view-install').textContent = info.lpg_tank_installation || info.lpg_installation_type || '—';
-      modal.querySelector('#view-notes').textContent = info.notes && String(info.notes).trim() ? info.notes : '(No additional notes)';
-      modal.querySelector('#view-saved-at').textContent = info.created_at ? new Date(info.created_at).toLocaleString() : '—';
-
-      // NEW: min/max display
-      modal.querySelector('#view-min-level').textContent = (info.lpg_min_level !== null && info.lpg_min_level !== undefined) ? String(info.lpg_min_level) + '%' : '—';
-      modal.querySelector('#view-max-level').textContent = (info.lpg_max_level !== null && info.lpg_max_level !== undefined) ? String(info.lpg_max_level) + '%' : '—';
-
-      // NEW: alarm email display - show multiple on separate lines for readability
-      const viewAlarmEl = modal.querySelector('#view-alarm-email');
-      if (info.alarm_email) {
-        const parts = String(info.alarm_email).split(/[;,]+/).map(s => s.trim()).filter(Boolean);
-        viewAlarmEl.innerHTML = parts.map(p => escapeHtml(p)).join('<br>');
-      } else {
-        viewAlarmEl.textContent = '—';
+  // enter-to-save convenience
+  [currentEl, newEl, confirmEl].forEach(el => {
+    if (!el) return;
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        saveBtn && saveBtn.click();
       }
+    });
+  });
 
-      // NEW: project code & emirate
-      modal.querySelector('#view-project-code').textContent = info.project_code || '—';
-      modal.querySelector('#view-emirate').textContent = info.emirate || '—';
+  // focus first field
+  try { setTimeout(() => { (currentEl || targetEl)?.focus(); }, 50); } catch (e) { /* ignore */ }
 
-      msgEl.textContent = '';
-    } catch (err) {
-      msgEl.textContent = 'No saved information for this terminal.';
-      modal.querySelector('#view-building').textContent = '—';
-      modal.querySelector('#view-address').textContent = '—';
-      modal.querySelector('#view-afg').textContent = '—';
-      modal.querySelector('#view-client').textContent = '—';
-      modal.querySelector('#view-capacity').textContent = '—';
-      modal.querySelector('#view-details').textContent = '—';
-      modal.querySelector('#view-type').textContent = '—';
-      modal.querySelector('#view-install').textContent = '—';
-      modal.querySelector('#view-notes').textContent = '(No additional notes)';
-      modal.querySelector('#view-saved-at').textContent = '—';
-      modal.querySelector('#view-min-level').textContent = '—';
-      modal.querySelector('#view-max-level').textContent = '—';
-      modal.querySelector('#view-alarm-email').textContent = '—';
-      modal.querySelector('#view-project-code').textContent = '—';
-      modal.querySelector('#view-emirate').textContent = '—';
+  saveBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+
+    const targetUser = targetEl && targetEl.value ? String(targetEl.value).trim() : '';
+    const currentPassword = currentEl && currentEl.value ? String(currentEl.value) : '';
+    const newPassword = newEl && newEl.value ? String(newEl.value) : '';
+    const confirmPassword = confirmEl && confirmEl.value ? String(confirmEl.value) : '';
+
+    // Basic client-side validation
+    if (!targetUser) {
+      setMsg('Target account is required.', '#ffdede');
+      return;
     }
-  })();
+    if (!currentPassword.trim()) {
+      setMsg('Current password is required.', '#ffdede');
+      return;
+    }
+    if (!newPassword.trim()) {
+      setMsg('New password is required.', '#ffdede');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setMsg('New password and confirmation do not match.', '#ffdede');
+      return;
+    }
+    if (newPassword.length < 6) {
+      setMsg('New password must be at least 6 characters.', '#ffdede');
+      return;
+    }
+
+    // Enforce allowed targets client-side (defense-in-depth; server must enforce too)
+    const allowed = targets.map(t => t.value);
+    if (!allowed.includes(targetUser)) {
+      setMsg('You are not allowed to change that account password.', '#ffdede');
+      return;
+    }
+
+    // Disable button during request
+    const prevText = saveBtn.textContent;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    setMsg('Saving…', 'var(--muted)');
+
+    try {
+      await changePasswordApi({ currentPassword, targetUsername: targetUser, newPassword });
+      setMsg('Password updated successfully.', '#22c55e');
+
+      // Clear inputs
+      if (currentEl) currentEl.value = '';
+      if (newEl) newEl.value = '';
+      if (confirmEl) confirmEl.value = '';
+
+      setTimeout(() => {
+        try { removeModal(); } catch (e) { /* ignore */ }
+      }, 900);
+    } catch (err) {
+      setMsg('Change password failed: ' + (err && err.message ? err.message : 'Unknown'), '#ffdede');
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = prevText;
+    }
+  });
 }
 
 /* ---------------------------
@@ -2938,6 +3023,7 @@ function applyViewMode(mode) {
 function setupViewToggle() {
   const btn = document.getElementById('toggle-view-btn');
   if (!btn) return;
+
   // Restore saved mode if any
   let mode = 'cards';
   try {
@@ -2946,7 +3032,13 @@ function setupViewToggle() {
   } catch (e) { /* ignore */ }
   applyViewMode(mode);
 
-  btn.addEventListener('click', (e) => {
+  // FIX: prevent duplicate click handlers (setupViewToggle is called early + again in init)
+  if (btn._boundToggleViewHandler) {
+    try { btn.removeEventListener('click', btn._boundToggleViewHandler); } catch (e) { /* ignore */ }
+    btn._boundToggleViewHandler = null;
+  }
+
+  btn._boundToggleViewHandler = (e) => {
     e.stopPropagation();
     // Toggle
     const current = document.getElementById('tanks-list') && document.getElementById('tanks-list').style.display !== 'none' ? 'list' : 'cards';
@@ -2956,7 +3048,9 @@ function setupViewToggle() {
     if (document.activeElement && document.activeElement.classList.contains('tank-card')) {
       try { document.activeElement.focus(); } catch (err) { /* ignore */ }
     }
-  });
+  };
+
+  btn.addEventListener('click', btn._boundToggleViewHandler);
 }
 
 // Band helpers for battery and GSM
@@ -3677,7 +3771,6 @@ function updateListRow(device) {
   const fillWidth = (numeric == null || isNaN(numeric)) ? 0 : Math.max(0, Math.min(100, Math.round(numeric)));
 
   // update level bar
-
   const bar = row.querySelector('.list-level-bar');
   const fill = row.querySelector('.list-level-fill');
   const label = row.querySelector('.list-level-label');
@@ -3706,20 +3799,188 @@ function updateListRow(device) {
 }
 
 /* ---------------------------
-   Init
+   Read-only Tank Info View Modal
    --------------------------- */
 
- // Single, unified init that loads titles BEFORE building cards
-async function init() {
-  // prevent starting if not authenticated (for this page load)
-  if (!isLoggedIn()) {
-    return;
+// Show a professional, read-only modal with tank_info values for a terminal
+function showTankInfoViewModal(terminalId) {
+  const modal = document.createElement('div');
+  modal.className = 'history-modal tank-info-view';
+  modal.innerHTML = `
+    <div class="history-panel" role="dialog" aria-modal="true" aria-label="Device Information View for ${escapeHtml(terminalId)}">
+      <div class="history-actions" style="align-items:center;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong>Device Information</strong>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="history-controls">
+            <button class="history-close" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="tank-info-view-body" style="display:grid;grid-template-columns: 1fr 1fr; gap:18px; padding-top:8px;">
+        <div style="background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:16px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:700;">Building / Company</div>
+          <div id="view-building" style="font-size:15px;color:var(--text);"></div>
+
+          <div style="font-size:13px;color:var(--muted);margin-top:12px;font-weight:700;">Address</div>
+          <div id="view-address" style="font-size:14px;color:var(--text);"></div>
+
+          <div style="display:flex;gap:12px;margin-top:12px;">
+            <div style="flex:1;">
+              <div style="font-size:13px;color:var(--muted);font-weight:700;">AFG Bld Code</div>
+              <div id="view-afg" style="font-size:14px;color:var(--text);"></div>
+            </div>
+            <div style="flex:1;">
+              <div style="font-size:13px;color:var(--muted);font-weight:700;">Client Bld Code</div>
+              <div id="view-client" style="font-size:14px;color:var(--text);"></div>
+            </div>
+          </div>
+
+          <!-- NEW: Min/Max display -->
+          <div style="margin-top:12px;">
+            <div style="font-size:13px;color:var(--muted);font-weight:700;">LPG Min Level</div>
+            <div id="view-min-level" style="font-size:14px;color:var(--text);"></div>
+
+            <div style="font-size:13px;color:var(--muted);margin-top:8px;font-weight:700;">LPG Max Level</div>
+            <div id="view-max-level" style="font-size:14px;color:var(--text);"></div>
+          </div>
+
+          <!-- NEW: Project Code & Emirate -->
+          <div style="margin-top:12px;">
+            <div style="font-size:13px;color:var(--muted);font-weight:700;">Project Code</div>
+            <div id="view-project-code" style="font-size:14px;color:var(--text);"></div>
+
+            <div style="font-size:13px;color:var(--muted);margin-top:8px;font-weight:700;">Emirate</div>
+            <div id="view-emirate" style="font-size:14px;color:var(--text);"></div>
+          </div>
+        </div>
+
+        <div style="background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:16px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:700;">LPG Tank Capacity</div>
+          <div id="view-capacity" style="font-size:15px;color:var(--text);"></div>
+
+          <div style="font-size:13px;color:var(--muted);margin-top:12px;font-weight:700;">LPG Tank Details</div>
+          <div id="view-details" style="font-size:14px;color:var(--text);"></div>
+
+          <div style="display:flex;gap:12px;margin-top:12px;">
+            <div style="flex:1;">
+              <div style="font-size:13px;color:var(--muted);font-weight:700;">Tank Type</div>
+              <div id="view-type" style="font-size:14px;color:var(--text);"></div>
+            </div>
+            <div style="flex:1;">
+              <div style="font-size:13px;color:var(--muted);font-weight:700;">Installation</div>
+              <div id="view-install" style="font-size:14px;color:var(--text);"></div>
+            </div>
+          </div>
+
+          <div style="margin-top:12px;">
+            <div style="font-size:13px;color:var(--muted);font-weight:700;">Alarm E-mail</div>
+            <div id="view-alarm-email" style="font-size:14px;color:var(--text);"></div>
+          </div>
+        </div>
+
+        <!-- full-width supplemental area -->
+        <div style="grid-column: 1 / -1; margin-top:6px; display:flex; justify-content:space-between; gap:12px;">
+          <div style="flex:1; background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:14px; border-radius:10px; border:1px solid rgba(255,255,255,0.02);">
+            <div style="font-size:13px;color:var(--muted);font-weight:700;">Notes</div>
+            <div id="view-notes" style="font-size:14px;color:var(--muted); margin-top:6px;">(No additional notes)</div>
+          </div>
+          <div style="width:240px; flex-shrink:0; background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); padding:14px; border-radius:10px; border:1px solid rgba(255,255,255,0.02); text-align:center;">
+            <div style="font-size:12px;color:var(--muted);font-weight:700;">Last saved</div>
+            <div id="view-saved-at" style="font-size:13px;color:var(--text); margin-top:8px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tank-info-view-msg" class="history-msg" style="margin-top:12px;"></div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  document.body.classList.add('modal-open');
+
+  const closeBtn = modal.querySelector('.history-close');
+  const msgEl = modal.querySelector('#tank-info-view-msg');
+
+  function removeModal() {
+    modal.remove();
+    document.body.classList.remove('modal-open');
   }
 
-  // mark started so subsequent events don't re-run init
-  window._app_started = true;
+  closeBtn.addEventListener('click', removeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) removeModal(); });
 
+  // populate fields
+  (async () => {
+    try {
+      msgEl.textContent = 'Loading…';
+      const info = await fetchTankInfo(terminalId);
+      modal.querySelector('#view-building').textContent = info.building_name || '—';
+      modal.querySelector('#view-address').textContent = info.address || '—';
+      modal.querySelector('#view-afg').textContent = info.afg_bld_code || '—';
+      modal.querySelector('#view-client').textContent = info.client_bld_code || '—';
+      modal.querySelector('#view-capacity').textContent = info.lpg_tank_capacity || '—';
+      modal.querySelector('#view-details').textContent = info.lpg_tank_details || '—';
+      modal.querySelector('#view-type').textContent = info.lpg_tank_type || '—';
+      modal.querySelector('#view-install').textContent = info.lpg_tank_installation || info.lpg_installation_type || '—';
+      modal.querySelector('#view-notes').textContent = info.notes && String(info.notes).trim() ? info.notes : '(No additional notes)';
+      modal.querySelector('#view-saved-at').textContent = info.created_at ? new Date(info.created_at).toLocaleString() : '—';
+
+      // NEW: min/max display
+      modal.querySelector('#view-min-level').textContent = (info.lpg_min_level !== null && info.lpg_min_level !== undefined) ? String(info.lpg_min_level) + '%' : '—';
+      modal.querySelector('#view-max-level').textContent = (info.lpg_max_level !== null && info.lpg_max_level !== undefined) ? String(info.lpg_max_level) + '%' : '—';
+
+      // NEW: alarm email display - show multiple on separate lines for readability
+      const viewAlarmEl = modal.querySelector('#view-alarm-email');
+      if (info.alarm_email) {
+        const parts = String(info.alarm_email).split(/[;,]+/).map(s => s.trim()).filter(Boolean);
+        viewAlarmEl.innerHTML = parts.map(p => escapeHtml(p)).join('<br>');
+      } else {
+        viewAlarmEl.textContent = '—';
+      }
+
+      // NEW: project code & emirate
+      modal.querySelector('#view-project-code').textContent = info.project_code || '—';
+      modal.querySelector('#view-emirate').textContent = info.emirate || '—';
+
+      msgEl.textContent = '';
+    } catch (err) {
+      msgEl.textContent = 'No saved information for this terminal.';
+      modal.querySelector('#view-building').textContent = '—';
+      modal.querySelector('#view-address').textContent = '—';
+      modal.querySelector('#view-afg').textContent = '—';
+      modal.querySelector('#view-client').textContent = '—';
+      modal.querySelector('#view-capacity').textContent = '—';
+      modal.querySelector('#view-details').textContent = '—';
+      modal.querySelector('#view-type').textContent = '—';
+      modal.querySelector('#view-install').textContent = '—';
+      modal.querySelector('#view-notes').textContent = '(No additional notes)';
+      modal.querySelector('#view-saved-at').textContent = '—';
+      modal.querySelector('#view-min-level').textContent = '—';
+      modal.querySelector('#view-max-level').textContent = '—';
+      modal.querySelector('#view-alarm-email').textContent = '—';
+      modal.querySelector('#view-project-code').textContent = '—';
+      modal.querySelector('#view-emirate').textContent = '—';
+    }
+  })();
+}
+
+/* ---------------------------
+   Init (UPDATED)
+   - No isLoggedIn(), no waiting for app:login.
+   - Bootstrap via /api/me (server session) to get role/username for gating.
+   --------------------------- */
+
+async function init() {
   if (!tanksContainer) return;
+
+  // Bootstrap auth identity/role first (server enforces redirect if unauthenticated)
+  await bootstrapAuth();
+
+  // mark started so subsequent callers don't re-run init
+  window._app_started = true;
 
   try {
     // Load titles and sites from backend first so inputs show correct values on initial render
@@ -3789,7 +4050,7 @@ async function init() {
   // If logged in as admin, reveal the Administrator Menu area
   try {
     const adminMenu = document.getElementById('admin-menu');
-      if (isAdmin() && adminMenu) {
+    if (isAdmin() && adminMenu) {
       adminMenu.style.display = 'block';
       adminMenu.setAttribute('aria-hidden', 'false');
 
@@ -3826,6 +4087,25 @@ async function init() {
           });
         } else {
           adminDevInfoBtn.style.display = 'none';
+        }
+      }
+
+      // NEW: Change Password button (admin menu) — show for Sonic and Alfanar_Admin1
+      const adminChangePasswordBtn = document.getElementById('admin-change-password-btn');
+      if (adminChangePasswordBtn) {
+        if (canSeeChangePassword()) {
+          adminChangePasswordBtn.style.display = '';
+          // prevent duplicate handlers
+          if (adminChangePasswordBtn._boundHandler) {
+            try { adminChangePasswordBtn.removeEventListener('click', adminChangePasswordBtn._boundHandler); } catch (e) { /* ignore */ }
+          }
+          adminChangePasswordBtn._boundHandler = (e) => {
+            e.stopPropagation();
+            showChangePasswordModal();
+          };
+          adminChangePasswordBtn.addEventListener('click', adminChangePasswordBtn._boundHandler);
+        } else {
+          adminChangePasswordBtn.style.display = 'none';
         }
       }
 
@@ -3902,7 +4182,7 @@ async function init() {
           }
         });
       }
-         } else if (adminMenu) {
+    } else if (adminMenu) {
       adminMenu.style.display = 'none';
       adminMenu.setAttribute('aria-hidden', 'true');
 
@@ -3912,12 +4192,13 @@ async function init() {
   } catch (e) {
     console.warn('Failed to set admin menu visibility', e && e.message);
   }
+
   // Show simple User Menu for non-admin authenticated users
   try {
     const userMenu = document.getElementById('user-menu');
     if (userMenu) {
       if (!isAdmin()) {
-        // show for normal authenticated users
+        // show for normal authenticated users (editor/viewer)
         userMenu.style.display = 'block';
         userMenu.setAttribute('aria-hidden', 'false');
 
@@ -3941,6 +4222,19 @@ async function init() {
             userDevInfoBtn.style.display = 'none';
           }
         }
+
+        // NEW: Change Password (user menu) — show for Sonic and Alfanar_Admin1 (editor) only
+        const userChangePasswordBtn = document.getElementById('user-change-password-btn');
+        if (userChangePasswordBtn) {
+          if (canSeeChangePassword()) {
+            userChangePasswordBtn.style.display = '';
+            userChangePasswordBtn.removeEventListener('click', userChangePasswordBtn._boundHandler);
+            userChangePasswordBtn._boundHandler = (e) => { e.stopPropagation(); showChangePasswordModal(); };
+            userChangePasswordBtn.addEventListener('click', userChangePasswordBtn._boundHandler);
+          } else {
+            userChangePasswordBtn.style.display = 'none';
+          }
+        }
       } else {
         // hide for admins (they already have the admin menu)
         userMenu.style.display = 'none';
@@ -3950,6 +4244,7 @@ async function init() {
   } catch (e) {
     console.warn('Failed to set user menu visibility', e && e.message);
   }
+
   // Ensure location displays are accurate (in case loaded after card creation)
   devices.forEach(d => updateCardLocationDisplay(d));
 
@@ -3963,18 +4258,14 @@ async function init() {
   setInterval(refreshAll, POLL_INTERVAL_MS);
 }
 
-// Expose a named start function so the login script can call it after authentication
-window.appStart = init;
-
-// Always wait for the login event; the login modal shows on every page load.
-// When the login modal calls window.appStart() (after setting window._clientAuthenticated = true),
-// init() will run for this page load.
-const onLogin = function () {
-  if (window._app_started) return;
-  try { init(); } catch (e) { console.warn('Init after login failed', e); }
-  window.removeEventListener('app:login', onLogin);
-};
-window.addEventListener('app:login', onLogin);
+// Start immediately after DOM is ready (server handles redirect if unauthenticated)
+(async function startApp() {
+  try {
+    await init();
+  } catch (e) {
+    console.warn('App init failed:', e && e.message);
+  }
+})();
 
 // --- IMPORTANT: ensure the view toggle is wired immediately so clicks always work ---
 try {

@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Login — Sonic Tank Level</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+
+  <!-- Reuse site theme -->
+  <link rel="stylesheet" href="style.css?v=2" />
+
+  <style>
+    /* Dedicated login page layout (no modal; full page) */
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
+      background-attachment: fixed;
+      background-size: cover;
+      color: var(--text);
+      font-family: Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    .login-page {
+      width: 100%;
+      max-width: 520px;
+      margin: 48px auto;
+      padding: 0 20px;
+      flex: 1 0 auto;
+    }
+    .login-card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      background-color: var(--card);
+      border: 1px solid rgba(255,255,255,0.04);
+      border-radius: 14px;
+      box-shadow: var(--shadow-1);
+      padding: 22px;
+    }
+    .login-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+    .login-header img {
+      width: 84px;
+      height: 52px;
+      object-fit: contain;
+      border-radius: 8px;
+    }
+    .login-title {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 800;
+    }
+    .login-subtitle {
+      margin: 4px 0 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .login-form {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .login-form label {
+      font-size: 13px;
+      color: var(--muted);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .login-form input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.04);
+      background: rgba(255,255,255,0.015);
+      color: var(--text);
+      outline: none;
+    }
+    .login-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .login-error {
+      margin-top: 10px;
+      color: #ffdede;
+      background: rgba(255,0,0,0.06);
+      border: 1px solid rgba(255,255,255,0.02);
+      padding: 10px 12px;
+      border-radius: 8px;
+      display: none;
+      font-size: 13px;
+    }
+    .login-footer {
+      text-align: center;
+      padding: 14px 8px;
+      color: var(--muted);
+      font-size: 13px;
+      border-top: 1px solid rgba(255,255,255,0.02);
+    }
+    .next-hint {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar" style="min-height: 112px; padding: 22px 24px;">
+    <div class="brand-with-logo">
+      <div class="header-logo" aria-hidden="true">
+        <img src="/static/logo.png" alt="Sonic logo" class="logo-img" style="width:120px;height:74px;" />
+      </div>
+      <div class="brand">
+        <h1 style="margin:0;font-size:24px;">Tank Level</h1>
+        <p class="subtitle" style="margin:0;">Secure sign-in</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="login-page">
+    <section class="login-card" role="region" aria-label="Login">
+      <div class="login-header">
+        <img src="/static/logo.png" alt="" aria-hidden="true" />
+        <div>
+          <h2 class="login-title">Sign in</h2>
+          <p class="login-subtitle">Enter your credentials to continue.</p>
+        </div>
+      </div>
+
+      <form id="login-form" class="login-form" autocomplete="on">
+        <label>
+          Username
+          <input id="login-username" name="username" type="text" autocomplete="username" required />
+        </label>
+
+        <label>
+          Password
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+        </label>
+
+        <div class="login-actions">
+          <button class="btn" id="login-submit" type="submit" style="min-width:110px;">Sign in</button>
+          <a class="btn" href="/" id="login-cancel" style="background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.04);text-decoration:none;">Cancel</a>
+        </div>
+
+        <div id="login-error" class="login-error" role="alert"></div>
+
+        <div class="next-hint" id="next-hint" style="display:none;"></div>
+      </form>
+    </section>
+  </main>
+
+  <footer class="login-footer">
+    <span>Powered by SONIC</span>
+  </footer>
+
+  <script>
+    (function () {
+      const form = document.getElementById('login-form');
+      const userEl = document.getElementById('login-username');
+      const passEl = document.getElementById('login-password');
+      const errEl = document.getElementById('login-error');
+      const nextHint = document.getElementById('next-hint');
+
+      // Read next= from URL; default to "/"
+      const params = new URLSearchParams(window.location.search || '');
+      const next = params.get('next') || '/';
+
+      function showError(msg) {
+        errEl.textContent = msg || 'Login failed.';
+        errEl.style.display = 'block';
+      }
+      function clearError() {
+        errEl.textContent = '';
+        errEl.style.display = 'none';
+      }
+
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        clearError();
+
+        const username = (userEl.value || '').trim();
+        const password = (passEl.value || '').trim();
+
+        if (!username || !password) {
+          showError('Please enter username and password.');
+          return;
+        }
+
+        try {
+          const resp = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+          });
+
+          const json = await resp.json().catch(() => ({}));
+          if (!resp.ok || !json.ok) {
+            showError(json.error || 'Invalid username or password.');
+            passEl.value = '';
+            passEl.focus();
+            return;
+          }
+
+          // Server session is now established via cookie; redirect
+          window.location.href = next;
+        } catch (err) {
+          showError('Login failed. Please try again.');
+        }
+      });
+
+      // Focus
+      try { setTimeout(() => userEl.focus(), 50); } catch (e) { /* ignore */ }
+    })();
+  </script>
+</body>
+</html>

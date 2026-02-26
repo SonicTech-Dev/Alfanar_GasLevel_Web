@@ -320,6 +320,16 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
   color: var(--text);
 }
 
+/* NEW: Document role permission hint */
+.permission-hint{
+  margin-top:8px;
+  font-size:12px;
+  color:var(--muted);
+}
+.permission-hint strong{
+  color:var(--text);
+}
+
 /* Responsive tweaks */
 @media (max-width:768px){
   .header h1{font-size:20px}
@@ -357,10 +367,12 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
     <div>
       <h1>📋 Project Document Tracker</h1>
       <p>Professional Edition</p>
+      <!-- NEW: permission hint for document-limited accounts (filled by document.js) -->
+      <div id="permission-hint" class="permission-hint" style="display:none;"></div>
     </div>
     <div class="nav-buttons">
       <!-- Back to main page button -->
-      <a href="/dashboard" class="back-btn" title="Back to main">
+      <a href="/dashboard" class="back-btn" title="Back to main" id="back-btn">
         ⬅ Back
       </a>
 
@@ -379,7 +391,7 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
 
     <!-- NEW: Add button identical in behavior to Map view (opens add/edit modal) -->
     <div style="margin-bottom:12px;">
-      <button class="nav-btn" onclick="openEditModal()">➕ Add</button>
+      <button class="nav-btn" onclick="openEditModal()" id="add-site-btn">➕ Add</button>
     </div>
 
     <div class="dashboard-grid" id="dashboardBoxes"></div>
@@ -402,7 +414,7 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
 <div id="map" class="screen">
   <div class="map-container" id="mapContainer">
     <div class="map-controls">
-      <button onclick="openEditModal()">➕ Add</button>
+      <button onclick="openEditModal()" id="map-add-site-btn">➕ Add</button>
       <button onclick="reloadDocumentTracker()">🔄 Refresh</button>
     </div>
     <div id="fullMap"></div>
@@ -480,7 +492,7 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
       <div id="editProjectInfo" style="background: rgba(255,255,255,0.02); padding:12px; border-radius:10px; margin-bottom:15px; border:1px solid rgba(255,255,255,0.04)"></div>
       <form id="editForm" onsubmit="saveEdit(event)">
         <div id="editDocuments"></div>
-        <button type="submit" class="btn-primary">💾 Save Changes</button>
+        <button type="submit" class="btn-primary" id="edit-save-btn">💾 Save Changes</button>
         <button type="button" class="btn-secondary" onclick="closeEditModal()">Cancel</button>
         <!-- NEW: Delete button, shown only when editing an existing row -->
         <button type="button" id="editDeleteBtn" class="btn-secondary" style="display:none;background: var(--accent-2); color: #fff; border: none; margin-top:8px;">🗑️ Delete</button>
@@ -501,72 +513,77 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
       <form id="docsForm" onsubmit="saveDocs(event)">
         <input type="hidden" id="docs-id" value="">
 
-        <div class="doc-section">
+        <div class="doc-section" data-doc-type="istifaa">
           <h4>ISTIFAA Document</h4>
           <div id="docs-info-istifaa" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
-          <div class="form-group">
+          <div class="form-group docs-upload" data-doc-type="istifaa">
             <label>Upload / Replace</label>
             <input type="file" id="docs-file-istifaa" accept="application/pdf,image/*">
           </div>
           <button type="button"
-                  class="btn-secondary"
+                  class="btn-secondary docs-delete"
+                  data-doc-type="istifaa"
                   style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
                   onclick="deleteDocFile('istifaa')">🗑️ Delete ISTIFAA File</button>
         </div>
 
-        <div class="doc-section">
+        <div class="doc-section" data-doc-type="amc">
           <h4>AMC Document</h4>
           <div id="docs-info-amc" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
-          <div class="form-group">
+          <div class="form-group docs-upload" data-doc-type="amc">
             <label>Upload / Replace</label>
             <input type="file" id="docs-file-amc" accept="application/pdf,image/*">
           </div>
           <button type="button"
-                  class="btn-secondary"
+                  class="btn-secondary docs-delete"
+                  data-doc-type="amc"
                   style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
                   onclick="deleteDocFile('amc')">🗑️ Delete AMC File</button>
         </div>
 
-        <div class="doc-section">
+        <div class="doc-section" data-doc-type="doe_noc">
           <h4>DOE NOC Document</h4>
           <div id="docs-info-doe_noc" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
-          <div class="form-group">
+          <div class="form-group docs-upload" data-doc-type="doe_noc">
             <label>Upload / Replace</label>
             <input type="file" id="docs-file-doe_noc" accept="application/pdf,image/*">
           </div>
           <button type="button"
-                  class="btn-secondary"
+                  class="btn-secondary docs-delete"
+                  data-doc-type="doe_noc"
                   style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
                   onclick="deleteDocFile('doe_noc')">🗑️ Delete DOE NOC File</button>
         </div>
 
-        <div class="doc-section">
+        <div class="doc-section" data-doc-type="coc">
           <h4>COC Document</h4>
           <div id="docs-info-coc" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
-          <div class="form-group">
+          <div class="form-group docs-upload" data-doc-type="coc">
             <label>Upload / Replace</label>
             <input type="file" id="docs-file-coc" accept="application/pdf,image/*">
           </div>
           <button type="button"
-                  class="btn-secondary"
+                  class="btn-secondary docs-delete"
+                  data-doc-type="coc"
                   style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
                   onclick="deleteDocFile('coc')">🗑️ Delete COC File</button>
         </div>
 
-        <div class="doc-section">
+        <div class="doc-section" data-doc-type="tpi">
           <h4>TPI Document</h4>
           <div id="docs-info-tpi" style="font-size:11px;color:var(--muted);margin-bottom:4px;"></div>
-          <div class="form-group">
+          <div class="form-group docs-upload" data-doc-type="tpi">
             <label>Upload / Replace</label>
             <input type="file" id="docs-file-tpi" accept="application/pdf,image/*">
           </div>
           <button type="button"
-                  class="btn-secondary"
+                  class="btn-secondary docs-delete"
+                  data-doc-type="tpi"
                   style="margin-top:4px;padding:6px 10px;font-size:11px;width:auto"
                   onclick="deleteDocFile('tpi')">🗑️ Delete TPI File</button>
         </div>
 
-        <button type="submit" class="btn-primary">💾 Save Documents</button>
+        <button type="submit" class="btn-primary" id="docs-save-btn">💾 Save Documents</button>
         <button type="button" class="btn-secondary" onclick="closeDocsModal()">Cancel</button>
       </form>
     </div>
@@ -602,6 +619,6 @@ tbody tr:hover{background: rgba(255,255,255,0.02)}
 </div>
 
 <!-- Load the new, API-backed logic (replaces the old inline script/localStorage) -->
-<script src="document.js?v=4"></script>
+<script src="document.js?v=5"></script>
 </body>
 </html>
