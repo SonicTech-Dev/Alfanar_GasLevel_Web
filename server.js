@@ -85,7 +85,7 @@ app.use(
       httpOnly: true,
       sameSite: 'lax',
       secure: isProd(), // requires HTTPS in production
-      maxAge: 30 * 60 * 1000, // 30 minutes
+      maxAge: 60 * 60 * 1000, // 30 minutes
     },
   })
 );

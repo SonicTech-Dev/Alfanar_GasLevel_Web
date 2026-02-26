@@ -278,6 +278,93 @@
       100% { background-color: transparent; }
     }
   </style>
+
+  <!-- =========================================================
+       Option C: Global session-expiry handling (fetch interceptor)
+       ========================================================= -->
+  <script>
+    (function () {
+      const LOGIN_PATH = '/login';
+
+      function buildNext() {
+        try {
+          return window.location.pathname + window.location.search + window.location.hash;
+        } catch (e) {
+          return '/';
+        }
+      }
+
+      function redirectToLogin() {
+        try {
+          if (window.location && window.location.pathname === LOGIN_PATH) return;
+          if (window.__sessionRedirecting) return;
+          window.__sessionRedirecting = true;
+
+          const next = encodeURIComponent(buildNext());
+          window.location.href = LOGIN_PATH + '?next=' + next;
+        } catch (e) {
+          try { window.location.href = LOGIN_PATH; } catch (err) { /* ignore */ }
+        }
+      }
+
+      function shouldRedirect(resp) {
+        try {
+          if (!resp) return false;
+          if (resp.status === 401 || resp.status === 403) return true;
+
+          const ct = (resp.headers && resp.headers.get) ? (resp.headers.get('content-type') || '') : '';
+          if (ct && ct.toLowerCase().includes('text/html')) return '__HTML__';
+        } catch (e) { /* ignore */ }
+        return false;
+      }
+
+      const _fetch = window.fetch ? window.fetch.bind(window) : null;
+      if (!_fetch) return;
+
+      window.fetch = async function (input, init) {
+        let url = '';
+        try { url = (typeof input === 'string') ? input : (input && input.url ? input.url : ''); } catch (e) { /* ignore */ }
+
+        const isApiCall = (function () {
+          try {
+            if (!url) return false;
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+              const u = new URL(url, window.location.origin);
+              return (u.pathname || '').startsWith('/api/');
+            }
+            return String(url).startsWith('/api/');
+          } catch (e) {
+            return false;
+          }
+        })();
+
+        const mergedInit = (function () {
+          try {
+            const obj = init ? Object.assign({}, init) : {};
+            if (!obj.credentials) obj.credentials = 'same-origin';
+            if (!obj.cache) obj.cache = 'no-store';
+            return obj;
+          } catch (e) {
+            return init || {};
+          }
+        })();
+
+        const resp = await _fetch(input, mergedInit);
+
+        const r = shouldRedirect(resp);
+        if (r === true && isApiCall) {
+          redirectToLogin();
+          return resp;
+        }
+        if (r === '__HTML__' && isApiCall) {
+          redirectToLogin();
+          return resp;
+        }
+
+        return resp;
+      };
+    })();
+  </script>
 </head>
 <body>
   <header class="topbar">
