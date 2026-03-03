@@ -22,7 +22,13 @@
 //
 // NEW: Separate "Documents" modal for uploads/downloads; main edit modal is only for site + expiry info.
 // NEW: Delete buttons in documents modal, implemented by uploading an empty file for that type.
-
+//
+// NEW (Excel import + UI fields):
+// - Extra Excel headers supported:
+//    - "DOE COC Expiry Date" -> coc_expiry_date
+//    - "DOE TPI Expiry Date" -> tpi_expiry_date
+// - New persisted fields (DB/API/UI):
+//    - gas_type, gas_contractor, plot, sector
 (function(){
   const API = {
     list: async (q = '') => {
@@ -528,10 +534,20 @@
         (r.coc_has_file ? 1 : 0) +
         (r.tpi_has_file ? 1 : 0);
 
+      // NEW: subtle subtext (no new columns)
+      const subParts = [];
+      if (r.gas_type != null && String(r.gas_type).trim() !== '') subParts.push(`Gas: ${escapeHtml(String(r.gas_type).trim())}`);
+      if (r.gas_contractor != null && String(r.gas_contractor).trim() !== '') subParts.push(`Contractor: ${escapeHtml(String(r.gas_contractor).trim())}`);
+      if (r.plot != null && String(r.plot).trim() !== '') subParts.push(`Plot: ${escapeHtml(String(r.plot).trim())}`);
+      if (r.sector != null && String(r.sector).trim() !== '') subParts.push(`Sector: ${escapeHtml(String(r.sector).trim())}`);
+      const subtextHtml = subParts.length
+        ? `<div style="margin-top:4px;font-size:11px;color:var(--muted);line-height:1.25">${subParts.join(' · ')}</div>`
+        : '';
+
       return `
         <tr data-id="${r.id}">
           <td>${escapeHtml(r.sn || '')}</td>
-          <td>${escapeHtml(r.building_name || '')}</td>
+          <td>${escapeHtml(r.building_name || '')}${subtextHtml}</td>
           <td>${escapeHtml(r.building_code || '')}</td>
           <td>${badge}</td>
           <td>${counts.expired}</td>
@@ -585,6 +601,16 @@
         <div class="form-row">
           <div class="form-group"><label>Longitude</label><input type="number" step="any" id="f-lng" value="${row?.longitude ?? ''}"></div>
           <div class="form-group"><label>Notes</label><input type="text" id="f-notes" value="${row?.notes || ''}"></div>
+        </div>
+
+        <!-- NEW: Gas/site metadata -->
+        <div class="form-row">
+          <div class="form-group"><label>Gas Type</label><input type="text" id="f-gas_type" value="${row?.gas_type || ''}"></div>
+          <div class="form-group"><label>Gas Contractor</label><input type="text" id="f-gas_contractor" value="${row?.gas_contractor || ''}"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Plot</label><input type="text" id="f-plot" value="${row?.plot || ''}"></div>
+          <div class="form-group"><label>Sector</label><input type="text" id="f-sector" value="${row?.sector || ''}"></div>
         </div>
       </div>
 
@@ -669,7 +695,12 @@
       doe_noc_expiry_date: document.getElementById('f-doe')?.value || '',
       coc_expiry_date: document.getElementById('f-coc')?.value || '',
       tpi_expiry_date: document.getElementById('f-tpi')?.value || '',
-      notes: document.getElementById('f-notes')?.value || ''
+      notes: document.getElementById('f-notes')?.value || '',
+      // NEW: persisted text fields (allow "")
+      gas_type: document.getElementById('f-gas_type')?.value != null ? String(document.getElementById('f-gas_type')?.value).trim() : '',
+      gas_contractor: document.getElementById('f-gas_contractor')?.value != null ? String(document.getElementById('f-gas_contractor')?.value).trim() : '',
+      plot: document.getElementById('f-plot')?.value != null ? String(document.getElementById('f-plot')?.value).trim() : '',
+      sector: document.getElementById('f-sector')?.value != null ? String(document.getElementById('f-sector')?.value).trim() : ''
     };
     try {
       if (id) await API.update(id, payload);
@@ -844,7 +875,8 @@
   }
 
   function exportToCSV() {
-    let csv='SN,Building Name,Building Code,ISTIFAA Exp,AMC Exp,DOE NOC Exp,COC Exp,TPI Exp,Exp Count,Ren Count,Val Count,Files Count,Status\n';
+    // Optional/Preferred: include new 4 fields after Building Code
+    let csv='SN,Building Name,Building Code,Gas Type,Gas Contractor,Plot,Sector,ISTIFAA Exp,AMC Exp,DOE NOC Exp,COC Exp,TPI Exp,Exp Count,Ren Count,Val Count,Files Count,Status\n';
     state.filtered.forEach(r=>{
       const s = aggregatedStatus(r);
       const counts = docStateCounts(r);
@@ -858,6 +890,10 @@
         r.sn || '',
         (r.building_name || '').replace(/"/g,'""'),
         (r.building_code || '').replace(/"/g,'""'),
+        (r.gas_type || '').replace(/"/g,'""'),
+        (r.gas_contractor || '').replace(/"/g,'""'),
+        (r.plot || '').replace(/"/g,'""'),
+        (r.sector || '').replace(/"/g,'""'),
         r.istifaa_expiry_date || '',
         r.amc_expiry_date || '',
         r.doe_noc_expiry_date || '',
@@ -892,6 +928,10 @@
         'SN': r.sn || '',
         'Building Name': r.building_name || '',
         'Building Code': r.building_code || '',
+        'Gas Type': r.gas_type || '',
+        'Gas Contractor': r.gas_contractor || '',
+        'Plot': r.plot || '',
+        'Sector': r.sector || '',
         'ISTIFAA Exp': r.istifaa_expiry_date || '',
         'AMC Exp': r.amc_expiry_date || '',
         'DOE NOC Exp': r.doe_noc_expiry_date || '',
@@ -930,6 +970,10 @@
         r.sn || '',
         (r.building_name || '').substring(0,20),
         r.building_code || '',
+        (r.gas_type || '').substring(0,18),
+        (r.gas_contractor || '').substring(0,18),
+        (r.plot || '').substring(0,12),
+        (r.sector || '').substring(0,12),
         r.istifaa_expiry_date || '',
         r.amc_expiry_date || '',
         r.doe_noc_expiry_date || '',
@@ -944,11 +988,11 @@
     });
     doc.autoTable({
       startY:35,
-      head:[['SN','Name','Code','ISTIFAA','AMC','DOE NOC','COC','TPI','Exp','Ren','Val','Files','Status']],
+      head:[['SN','Name','Code','Gas','Contractor','Plot','Sector','ISTIFAA','AMC','DOE NOC','COC','TPI','Exp','Ren','Val','Files','Status']],
       body:data,
       theme:'striped',
       headStyles:{fillColor:[102,126,234]},
-      styles:{fontSize:7}
+      styles:{fontSize:6.5}
     });
     doc.save('tank_documents.pdf');
   }
@@ -1161,6 +1205,20 @@
       'coc expiry date': 'coc_expiry_date',
       'tpi exp date': 'tpi_expiry_date',
       'tpi expiry date': 'tpi_expiry_date',
+
+      // NEW: extra compatibility headers
+      'doe coc exp date': 'coc_expiry_date',
+      'doe coc expiry date': 'coc_expiry_date',
+      'doe tpi exp date': 'tpi_expiry_date',
+      'doe tpi expiry date': 'tpi_expiry_date',
+
+      // NEW: new importable fields
+      'gas type': 'gas_type',
+      'gas contractor': 'gas_contractor',
+      'gas contractor name': 'gas_contractor',
+      'plot': 'plot',
+      'sector': 'sector',
+
       'latitude': 'latitude',
       'longitude': 'longitude',
       'notes': 'notes'
@@ -1226,6 +1284,11 @@
         building_type: idxMap['building_type'] != null ? String(row[idxMap['building_type']] || '').trim() : '',
         building_code,
         building_name,
+        // NEW: these must not be required; default to ""
+        gas_type: idxMap['gas_type'] != null ? String(row[idxMap['gas_type']] || '').trim() : '',
+        gas_contractor: idxMap['gas_contractor'] != null ? String(row[idxMap['gas_contractor']] || '').trim() : '',
+        plot: idxMap['plot'] != null ? String(row[idxMap['plot']] || '').trim() : '',
+        sector: idxMap['sector'] != null ? String(row[idxMap['sector']] || '').trim() : '',
         latitude: idxMap['latitude'] != null ? row[idxMap['latitude']] : null,
         longitude: idxMap['longitude'] != null ? row[idxMap['longitude']] : null,
         istifaa_expiry_date: idxMap['istifaa_expiry_date'] != null ? cellToIsoDate(row[idxMap['istifaa_expiry_date']]) : '',

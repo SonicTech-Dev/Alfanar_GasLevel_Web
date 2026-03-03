@@ -55,8 +55,8 @@ async function testDb() {
 testDb().catch(e => console.warn('DB test error', e && e.message));
 
 // parse JSON bodies (used by several endpoints including login-attempt)
-app.use(express.json({ limit: '250kb' }));
-
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '25mb';
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 /* -------------------------
    NEW: Session support (server-side auth persistence)
    ------------------------- */
@@ -333,12 +333,20 @@ async function createTankDocumentsTableIfNeeded() {
     const client = await pool.connect();
     try {
       await client.query(createSql);
-      console.log('Ensured tank_documents table exists');
+
+      // NEW: idempotent schema migration (safe on repeated startups)
+      // Add 4 new TEXT columns if missing
+      await client.query(`ALTER TABLE tank_documents ADD COLUMN IF NOT EXISTS gas_type TEXT;`);
+      await client.query(`ALTER TABLE tank_documents ADD COLUMN IF NOT EXISTS gas_contractor TEXT;`);
+      await client.query(`ALTER TABLE tank_documents ADD COLUMN IF NOT EXISTS plot TEXT;`);
+      await client.query(`ALTER TABLE tank_documents ADD COLUMN IF NOT EXISTS sector TEXT;`);
+
+      console.log('Ensured tank_documents table exists (and gas_type/gas_contractor/plot/sector columns)');
     } finally {
       client.release();
     }
   } catch (err) {
-    console.warn('Failed to create tank_documents table:', err && err.message);
+    console.warn('Failed to create/alter tank_documents table:', err && err.message);
   }
 }
 
@@ -1646,6 +1654,12 @@ function rowWithStatuses(r) {
     building_type: r.building_type,
     building_code: r.building_code,
     building_name: r.building_name,
+    // NEW: persisted text fields
+    gas_type: r.gas_type || null,
+    gas_contractor: r.gas_contractor || null,
+    plot: r.plot || null,
+    sector: r.sector || null,
+
     latitude: r.latitude === null || r.latitude === undefined ? null : Number(r.latitude),
     longitude: r.longitude === null || r.longitude === undefined ? null : Number(r.longitude),
     istifaa_expiry_date: ist,
@@ -1692,7 +1706,9 @@ app.get('/api/tank-documents', async (req, res) => {
     const client = await pool.connect();
     try {
       let sql = `
-        SELECT id, sn, building_type, building_code, building_name, latitude, longitude,
+        SELECT id, sn, building_type, building_code, building_name,
+               gas_type, gas_contractor, plot, sector,
+               latitude, longitude,
                istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
                notes, created_at, updated_at,
                istifaa_file, istifaa_file_name, istifaa_file_type, istifaa_file_uploaded_at,
@@ -1727,7 +1743,9 @@ app.get('/api/tank-documents/:id', async (req, res) => {
     const client = await pool.connect();
     try {
       const r = await client.query(
-        `SELECT id, sn, building_type, building_code, building_name, latitude, longitude,
+        `SELECT id, sn, building_type, building_code, building_name,
+                gas_type, gas_contractor, plot, sector,
+                latitude, longitude,
                 istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
                 notes, created_at, updated_at,
                 istifaa_file, istifaa_file_name, istifaa_file_type, istifaa_file_uploaded_at,
@@ -1756,6 +1774,13 @@ app.post('/api/tank-documents', express.json(), async (req, res) => {
     const building_type = b.building_type == null ? null : String(b.building_type).trim();
     const building_code = b.building_code == null ? null : String(b.building_code).trim();
     const building_name = b.building_name == null ? null : String(b.building_name).trim();
+
+    // NEW: extra fields (store NULL if blank/missing)
+    const gas_type = b.gas_type == null ? null : String(b.gas_type).trim();
+    const gas_contractor = b.gas_contractor == null ? null : String(b.gas_contractor).trim();
+    const plot = b.plot == null ? null : String(b.plot).trim();
+    const sector = b.sector == null ? null : String(b.sector).trim();
+
     const latitude = b.latitude == null || b.latitude === '' ? null : Number(b.latitude);
     const longitude = b.longitude == null || b.longitude === '' ? null : Number(b.longitude);
     const istifaa_expiry_date = parseDateOrNull(b.istifaa_expiry_date);
@@ -1771,16 +1796,20 @@ app.post('/api/tank-documents', express.json(), async (req, res) => {
       // We extract digits from existing sn values to be tolerant if any legacy non-numeric sn exist.
       const q = `
         INSERT INTO tank_documents
-          (sn, building_type, building_code, building_name, latitude, longitude,
+          (sn, building_type, building_code, building_name, gas_type, gas_contractor, plot, sector, latitude, longitude,
            istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
            notes, created_at, updated_at)
         VALUES (
           (SELECT COALESCE(MAX(CAST(regexp_replace(sn, '\\D', '', 'g') AS INTEGER)), 0) + 1 FROM tank_documents),
-          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now(), now()
         )
         ON CONFLICT (sn, building_code) DO UPDATE SET
           building_type = EXCLUDED.building_type,
           building_name = EXCLUDED.building_name,
+          gas_type = EXCLUDED.gas_type,
+          gas_contractor = EXCLUDED.gas_contractor,
+          plot = EXCLUDED.plot,
+          sector = EXCLUDED.sector,
           latitude = EXCLUDED.latitude,
           longitude = EXCLUDED.longitude,
           istifaa_expiry_date = EXCLUDED.istifaa_expiry_date,
@@ -1790,7 +1819,9 @@ app.post('/api/tank-documents', express.json(), async (req, res) => {
           tpi_expiry_date = EXCLUDED.tpi_expiry_date,
           notes = EXCLUDED.notes,
           updated_at = now()
-        RETURNING id, sn, building_type, building_code, building_name, latitude, longitude,
+        RETURNING id, sn, building_type, building_code, building_name,
+                  gas_type, gas_contractor, plot, sector,
+                  latitude, longitude,
                   istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
                   notes, created_at, updated_at,
                   istifaa_file, istifaa_file_name, istifaa_file_type, istifaa_file_uploaded_at,
@@ -1799,8 +1830,12 @@ app.post('/api/tank-documents', express.json(), async (req, res) => {
                   coc_file, coc_file_name, coc_file_type, coc_file_uploaded_at,
                   tpi_file, tpi_file_name, tpi_file_type, tpi_file_uploaded_at;
       `;
-      const params = [building_type, building_code, building_name, latitude, longitude,
-        istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes];
+      const params = [
+        building_type, building_code, building_name,
+        gas_type, gas_contractor, plot, sector,
+        latitude, longitude,
+        istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes
+      ];
       const r = await client.query(q, params);
       res.status(201).json(rowWithStatuses(r.rows[0]));
     } finally {
@@ -1823,6 +1858,13 @@ app.put('/api/tank-documents/:id', express.json(), async (req, res) => {
       building_type: b.building_type,
       building_code: b.building_code,
       building_name: b.building_name,
+
+      // NEW
+      gas_type: b.gas_type,
+      gas_contractor: b.gas_contractor,
+      plot: b.plot,
+      sector: b.sector,
+
       latitude: b.latitude == null || b.latitude === '' ? null : Number(b.latitude),
       longitude: b.longitude == null || b.longitude === '' ? null : Number(b.longitude),
       istifaa_expiry_date: parseDateOrNull(b.istifaa_expiry_date),
@@ -1838,8 +1880,19 @@ app.put('/api/tank-documents/:id', express.json(), async (req, res) => {
     let idx = 1;
     for (const [k, v] of Object.entries(fields)) {
       if (v !== undefined) {
-        columns.push(`${k} = $${idx++}`);
-        params.push(v);
+        // Normalize text fields to trimmed strings (or null if empty) for the new columns
+        if (k === 'gas_type' || k === 'gas_contractor' || k === 'plot' || k === 'sector') {
+          const s = (v == null) ? null : String(v).trim();
+          columns.push(`${k} = $${idx++}`);
+          params.push(s === '' ? null : s);
+        } else if (k === 'building_type' || k === 'building_code' || k === 'building_name') {
+          const s = (v == null) ? null : String(v).trim();
+          columns.push(`${k} = $${idx++}`);
+          params.push(s === '' ? null : s);
+        } else {
+          columns.push(`${k} = $${idx++}`);
+          params.push(v);
+        }
       }
     }
     if (!columns.length) return res.status(400).json({ error: 'no fields to update' });
@@ -1849,7 +1902,9 @@ app.put('/api/tank-documents/:id', express.json(), async (req, res) => {
     try {
       const r = await client.query(
         `UPDATE tank_documents SET ${columns.join(', ')}, updated_at = now()
-         WHERE id = $${idx} RETURNING id, sn, building_type, building_code, building_name, latitude, longitude,
+         WHERE id = $${idx} RETURNING id, sn, building_type, building_code, building_name,
+           gas_type, gas_contractor, plot, sector,
+           latitude, longitude,
            istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes, created_at, updated_at,
            istifaa_file, istifaa_file_name, istifaa_file_type, istifaa_file_uploaded_at,
            amc_file, amc_file_name, amc_file_type, amc_file_uploaded_at,
@@ -1889,7 +1944,7 @@ app.delete('/api/tank-documents/:id', async (req, res) => {
 /* -------------------------
    NEW: Bulk Import endpoint for Document Tracker
    POST /api/tank-documents/import
-   Body: { rows: [ { building_type?, building_code?, building_name?, latitude?, longitude?, istifaa_expiry_date?, amc_expiry_date?, doe_noc_expiry_date?, coc_expiry_date?, tpi_expiry_date?, notes? }, ... ] }
+   Body: { rows: [ { building_type?, building_code?, building_name?, latitude?, longitude?, istifaa_expiry_date?, amc_expiry_date?, doe_noc_expiry_date?, coc_expiry_date?, tpi_expiry_date?, gas_type?, gas_contractor?, plot?, sector?, notes? }, ... ] }
    Behavior (insert-only):
    - Always attempt to INSERT a new row and auto-generate SN.
    - Does not update existing rows.
@@ -1916,6 +1971,13 @@ app.post('/api/tank-documents/import', async (req, res) => {
           const building_type = b.building_type == null ? null : String(b.building_type).trim();
           const building_code = b.building_code == null ? null : String(b.building_code).trim();
           const building_name = b.building_name == null ? null : String(b.building_name).trim();
+
+          // NEW: persisted text fields (null if blank)
+          const gas_type = b.gas_type == null ? null : String(b.gas_type).trim();
+          const gas_contractor = b.gas_contractor == null ? null : String(b.gas_contractor).trim();
+          const plot = b.plot == null ? null : String(b.plot).trim();
+          const sector = b.sector == null ? null : String(b.sector).trim();
+
           const latitude = b.latitude == null || b.latitude === '' ? null : Number(b.latitude);
           const longitude = b.longitude == null || b.longitude === '' ? null : Number(b.longitude);
           const istifaa_expiry_date = parseDateOrNull(b.istifaa_expiry_date);
@@ -1934,17 +1996,21 @@ app.post('/api/tank-documents/import', async (req, res) => {
           // INSERT or UPDATE on conflict (sn, building_code)
           const qIns = `
             INSERT INTO tank_documents
-              (sn, building_type, building_code, building_name, latitude, longitude,
+              (sn, building_type, building_code, building_name, gas_type, gas_contractor, plot, sector, latitude, longitude,
                istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date,
                notes, created_at, updated_at)
             VALUES (
               (SELECT COALESCE(MAX(CAST(regexp_replace(sn, '\\D', '', 'g') AS INTEGER)), 0) + 1 FROM tank_documents),
-              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()
+              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now(), now()
             )
             ON CONFLICT ON CONSTRAINT uniq_sn_building DO UPDATE SET
               building_type = EXCLUDED.building_type,
               building_code = EXCLUDED.building_code,
               building_name = EXCLUDED.building_name,
+              gas_type = EXCLUDED.gas_type,
+              gas_contractor = EXCLUDED.gas_contractor,
+              plot = EXCLUDED.plot,
+              sector = EXCLUDED.sector,
               latitude = EXCLUDED.latitude,
               longitude = EXCLUDED.longitude,
               istifaa_expiry_date = EXCLUDED.istifaa_expiry_date,
@@ -1957,7 +2023,12 @@ app.post('/api/tank-documents/import', async (req, res) => {
             RETURNING id
           `;
           const params = [
-            building_type, building_code, building_name, latitude, longitude,
+            building_type, building_code, building_name,
+            (gas_type && gas_type.trim() !== '') ? gas_type : null,
+            (gas_contractor && gas_contractor.trim() !== '') ? gas_contractor : null,
+            (plot && plot.trim() !== '') ? plot : null,
+            (sector && sector.trim() !== '') ? sector : null,
+            latitude, longitude,
             istifaa_expiry_date, amc_expiry_date, doe_noc_expiry_date, coc_expiry_date, tpi_expiry_date, notes
           ];
           const r = await client.query(qIns, params);

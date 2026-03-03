@@ -1894,8 +1894,8 @@ function buildDeviceInfoModalHtml(uniqueId) {
           <textarea id="device-info-notes-${uniqueId}" class="graph-title-input" placeholder="Notes about this device" style="min-height:90px; width:100%; resize:vertical; padding:8px;"></textarea>
 
           <!-- NEW: Tank Title (editable only in Device Information) -->
-          <label style="display:block;margin-top:12px;margin-bottom:6px;color:var(--muted);font-size:13px;">Tank Title</label>
-          <input id="device-info-title-${uniqueId}" class="graph-title-input" placeholder="Tank Title" />
+          <label style="display:block;margin-top:12px;margin-bottom:6px;color:var(--muted);font-size:13px;">Project Name</label>
+          <input id="device-info-title-${uniqueId}" class="graph-title-input" placeholder="Project Name" />
         </div>
 
         <div style="flex:1 1 320px;min-width:280px;">
