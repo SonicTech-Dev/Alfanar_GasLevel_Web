@@ -549,6 +549,10 @@
           <td>${escapeHtml(r.sn || '')}</td>
           <td>${escapeHtml(r.building_name || '')}${subtextHtml}</td>
           <td>${escapeHtml(r.building_code || '')}</td>
+          <td>${escapeHtml((r.gas_type == null || String(r.gas_type).trim() === '') ? '' : String(r.gas_type))}</td>
+          <td>${escapeHtml((r.gas_contractor == null || String(r.gas_contractor).trim() === '') ? '' : String(r.gas_contractor))}</td>
+          <td>${escapeHtml((r.plot == null || String(r.plot).trim() === '') ? '' : String(r.plot))}</td>
+          <td>${escapeHtml((r.sector == null || String(r.sector).trim() === '') ? '' : String(r.sector))}</td>
           <td>${badge}</td>
           <td>${counts.expired}</td>
           <td>${counts.renewal}</td>
