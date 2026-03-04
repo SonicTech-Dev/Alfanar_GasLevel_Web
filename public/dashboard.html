@@ -429,7 +429,7 @@
         </table>
       </section>
 
-      <!-- Location panel (kept below or equal to summary height) -->
+      <!-- Location panel (kept below or equal to summary height with JS max-height) -->
       <section class="panel" id="location-panel">
         <div class="panel-header">
           <div class="panel-title">Location</div>
@@ -468,6 +468,18 @@
           </div>
         </div>
       </section>
+    </section>
+
+    <!-- NEW: Compact Total Gas Available panel (in the red-highlight gap: directly under Location, right column) -->
+    <section class="panel" id="total-gas-panel" style="grid-column: 2; padding: 10px 12px;">
+      <div class="panel-header" style="margin-bottom: 6px;">
+        <div class="panel-title" style="font-size: 13px; font-weight: 800;">Total Gas Available</div>
+      </div>
+      <div style="display:flex; align-items: baseline; gap: 8px;">
+        <div id="total-gas-liters" style="font-size: 22px; font-weight: 900; color: var(--text); line-height: 1;">—</div>
+        <div style="font-size: 12px; font-weight: 800; color: var(--muted);">Liters</div>
+      </div>
+      <div class="panel-subtitle" id="total-gas-subtext" style="margin-top: 4px; display:none;">—</div>
     </section>
 
     <!-- FULL-WIDTH: Devices list -->

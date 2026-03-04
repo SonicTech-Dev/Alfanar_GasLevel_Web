@@ -23,6 +23,10 @@
   const sumOnlineEl = document.getElementById('sum-online');
   const devicesCountEl = document.getElementById('map-devices-count');
 
+  // Total Gas panel refs
+  const totalGasLitersEl = document.getElementById('total-gas-liters');
+  const totalGasSubtextEl = document.getElementById('total-gas-subtext');
+
   // Location panel refs
   const locationPanel = document.getElementById('location-panel');
   const summaryPanel = document.getElementById('summary-panel');
@@ -178,6 +182,110 @@
     const m = s.match(/-?\d+(\.\d+)?/);
     if (!m) return null;
     return parseFloat(m[0]);
+  }
+
+  /* ---------------------------
+     TOTAL GAS AVAILABLE (Liters)
+     --------------------------- */
+
+  // Robust capacity parser: accepts "2000", "2,000", "2000 L", "2,000 liters", etc.
+  // Returns numeric liters or null if missing/unparseable/<=0.
+  function parseCapacityLiters(value) {
+    if (value == null) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+
+    // Extract first number-like token
+    const tokenMatch = raw.match(/-?[\d][\d\s,\.]*/);
+    if (!tokenMatch) return null;
+    let token = tokenMatch[0].replace(/\s+/g, '');
+
+    // If token looks like decimal comma (e.g., "2000,5" and no dots), convert comma to dot.
+    if (token.includes(',') && !token.includes('.')) {
+      const commas = (token.match(/,/g) || []).length;
+      if (commas === 1) {
+        const parts = token.split(',');
+        if (parts[1] && parts[1].length > 0 && parts[1].length <= 2) token = parts[0] + '.' + parts[1];
+        else token = parts.join('');
+      } else {
+        token = token.replace(/,/g, '');
+      }
+    } else {
+      // Has dot (or no comma): remove commas as thousands separators
+      token = token.replace(/,/g, '');
+    }
+
+    const n = parseFloat(token);
+    if (n == null || isNaN(n) || !isFinite(n) || n <= 0) return null;
+    return n;
+  }
+
+  // Returns { totalLiters: number|null, includedCount: number, skippedCount: number }
+  function computeTotalGasAvailableLiters() {
+    let total = 0;
+    let included = 0;
+    let skipped = 0;
+
+    devices.forEach(d => {
+      const level = d && d._lastValueNumeric;
+      if (level == null || isNaN(level) || !isFinite(level)) {
+        skipped++;
+        return; // skip offline/unknown
+      }
+
+      const cap = parseCapacityLiters(d && d.lpg_tank_capacity);
+      if (cap == null || isNaN(cap) || !isFinite(cap) || cap <= 0) {
+        skipped++;
+        return; // skip missing/unparseable capacity
+      }
+
+      const litersForDevice = cap * (Number(level) / 100);
+      if (litersForDevice == null || isNaN(litersForDevice) || !isFinite(litersForDevice) || litersForDevice < 0) {
+        skipped++;
+        return;
+      }
+
+      total += litersForDevice;
+      included++;
+    });
+
+    if (included === 0) {
+      return { totalLiters: null, includedCount: 0, skippedCount: skipped };
+    }
+    return { totalLiters: total, includedCount: included, skippedCount: skipped };
+  }
+
+  function formatLiters(n) {
+    // Professional display:
+    // - >= 1000 => whole liters with separators
+    // - < 1000 => 1 decimal
+    try {
+      const abs = Math.abs(Number(n));
+      if (!isFinite(abs)) return '—';
+
+      if (abs >= 1000) {
+        return Math.round(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+      }
+      return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 1 });
+    } catch {
+      return '—';
+    }
+  }
+
+  function updateTotalGasPanel() {
+    if (!totalGasLitersEl) return;
+
+    const r = computeTotalGasAvailableLiters();
+    if (!r || r.totalLiters == null) {
+      totalGasLitersEl.textContent = '—';
+      // Per request: remove "tanks included" line (keep it hidden)
+      if (totalGasSubtextEl) totalGasSubtextEl.style.display = 'none';
+      return;
+    }
+
+    totalGasLitersEl.textContent = formatLiters(r.totalLiters);
+    // Per request: remove "tanks included" line (keep it hidden)
+    if (totalGasSubtextEl) totalGasSubtextEl.style.display = 'none';
   }
 
   // Threshold status
@@ -487,6 +595,10 @@
   async function refreshAll() {
     const ids = Array.from(devices.keys());
     await Promise.all(ids.map(tid => refreshLevelFor(tid)));
+
+    // Update total gas after live levels are refreshed
+    updateTotalGasPanel();
+
     renderAlertsAndSummary();
     renderTable();
     renderMap();
@@ -581,6 +693,10 @@
     try {
       await loadCatalog();
       setDefaultLocationIfAvailable();
+
+      // Initial state for Total Gas panel (pre-levels)
+      updateTotalGasPanel();
+
       await refreshAll();
       await refreshGasDetails();
       setInterval(() => { refreshAll().catch(() => {}); }, POLL_INTERVAL_MS);
